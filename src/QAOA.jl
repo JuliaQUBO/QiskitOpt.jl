@@ -4,7 +4,10 @@ using Anneal
 using PythonCall
 
 Anneal.@anew Optimizer begin
-    name = "QAOA @ IBMQ"
+    name    = "QAOA @ IBMQ"
+    sense   = :min
+    domain  = :bool
+    version = v"0.4.0"
 end
 
 function Anneal.sample(sampler::Optimizer{T}) where {T}

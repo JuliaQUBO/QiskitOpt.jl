@@ -1,5 +1,5 @@
 channels = ["anaconda", "conda-forge"]
 
 [pip.deps]
-qiskit              = "==0.39.0"
-qiskit_optimization = "==0.4.0"
+qiskit              = "==0.39.4"
+qiskit-optimization = "==0.4.0"
