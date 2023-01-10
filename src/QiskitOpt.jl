@@ -1,5 +1,6 @@
 module QiskitOpt
 
+using Anneal
 using PythonCall
 
 # -*- :: Python Qiskit Modules :: -*- #
@@ -29,6 +30,35 @@ function __init__()
         qiskit.IBMQ.save_account(IBMQ_API_TOKEN)
     end
 end
+
+function quadratic_program(sampler::Anneal.AbstractSampler{T}) where {T}
+    # -*- Retrieve Model -*- #
+    Q, α, β = Anneal.qubo(sampler, Dict)
+
+    # -*- Build Qiskit Model -*- #
+    linear    = PythonCall.pydict()
+    quadratic = PythonCall.pydict()
+
+    for ((i, j), q) in Q
+        if i == j
+            linear[string(i)] = q
+        else
+            quadratic[string(i), string(j)] = q
+        end
+    end
+
+    qp = qiskit_optimization.QuadraticProgram()
+
+    for v in string.(Anneal.indices(sampler))
+        qp.binary_var(v)
+    end
+
+    qp.minimize(linear = linear, quadratic = quadratic)
+
+    return (qp, α, β)
+end
+
+export QAOA, VQE
 
 include("QAOA.jl")
 include("VQE.jl")

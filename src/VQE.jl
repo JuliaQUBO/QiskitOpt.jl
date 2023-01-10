@@ -1,49 +1,42 @@
 module VQE
 
+using Random
 using Anneal
-using PythonCall
-using ..QiskitOpt: qiskit, qiskit_optimization, qiskit_optimization_algorithms, qiskit_algorithms, qiskit_optimization_runtime
+using PythonCall: pyconvert
+using ..QiskitOpt:
+    qiskit,
+    qiskit_optimization,
+    qiskit_optimization_algorithms,
+    qiskit_algorithms,
+    qiskit_optimization_runtime,
+    quadratic_program
 
 Anneal.@anew Optimizer begin
-    name    = "VQE @ IBMQ"
-    sense   = :min
-    domain  = :bool
+    name = "VQE @ IBMQ"
+    sense = :min
+    domain = :bool
     version = v"0.4.0"
     attributes = begin
         NumberOfReads["num_reads"]::Integer        = 1_000
+        NumberOfShots["num_shots"]::Integer        = 1_024
+        MaximumIterations["max_iter"]::Integer     = 50
+        NumberOfRepetitions["num_reps"]::Integer   = 1
         RandomSeed["seed"]::Union{Integer,Nothing} = nothing
         IBMBackend["ibm_backend"]::String          = "ibmq_qasm_simulator"
+        Entanglement["entanglement"]::String       = "linear"
     end
 end
 
 function Anneal.sample(sampler::Optimizer{T}) where {T}
     # -*- Retrieve Attributes - *-
-    seed        = MOI.get(sampler, VQE.RandomSeed())
-    num_reads   = MOI.get(sampler, VQE.NumberOfReads())
-    ibm_backend = MOI.get(sampler, VQE.IBMBackend())
+    seed      = MOI.get(sampler, VQE.RandomSeed())
+    num_reads = MOI.get(sampler, VQE.NumberOfReads())
+
+    # -*- Instantiate Random Generator -*- #
+    rng = Random.Xoshiro(seed)
 
     # -*- Retrieve Model -*- #
-    Q, α, β = Anneal.qubo(sampler, Dict)
-
-    linear    = PythonCall.pydict()
-    quadratic = PythonCall.pydict()
-
-    for ((i, j), q) in Q
-        if i == j
-            linear[string(i)] = q
-        else
-            quadratic[string(i), string(j)] = q
-        end
-    end
-
-    # -*- Build Qiskit Model -*- #
-    qp = qiskit_optimization.QuadraticProgram()
-
-    for v in string.(Anneal.indices(sampler))
-        qp.binary_var(v)
-    end
-
-    qp.minimize(linear = linear, quadratic = quadratic)
+    qp, α, β = quadratic_program(sampler)
 
     # Results vector
     samples = Vector{Anneal.Sample{T,Int}}(undef, num_reads)
@@ -52,8 +45,8 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
     time_data = Dict{String,Any}()
 
     # Connect to IBMQ and get backend
-    connect_vqe(ibm_backend,  qp.get_num_binary_vars()) do client
-        vqe    = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
+    connect(sampler) do client
+        vqe     = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
         results = vqe.solve(qp)
 
         Ψ = Vector{Int}[]
@@ -72,43 +65,63 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
         P = cumsum(ρ)
 
         for i = 1:num_reads
-            p = rand()
+            p = rand(rng)
             j = first(searchsorted(P, p))
 
             samples[i] = Sample{T}(Ψ[j], Λ[j])
         end
 
-        time_data["effective"] =
-            pyconvert(Float64, results.min_eigen_solver_result.optimizer_time)
+        time_data["effective"] = pyconvert(
+            Float64,
+            results.min_eigen_solver_result.optimizer_time
+        )
 
         return nothing
     end
 
-    metadata = Dict{String,Any}("time"   => time_data, "origin" => "IBMQ @ $(ibm_backend)")
+    metadata = Dict{String,Any}(
+        "origin" => "IBMQ @ $(ibm_backend)",
+        "time"   => time_data, 
+    )
 
 
     return Anneal.SampleSet{T}(samples, metadata)
 end
 
-function connect_vqe(callback::Function, ibm_backend::String, num_qubits, shots::Int = 1024)
+function connect(
+    callback::Function,
+    sampler::Optimizer,
+)
+    # -*- Retrieve Attributes -*- #
+    num_shots    = MOI.get(sampler, VQE.NumberOfShots())
+    max_iter     = MOI.get(sampler, VQE.MaximumIterations())
+    num_reps     = MOI.get(sampler, VQE.NumberOfRepetitions())
+    num_qubits   = MOI.get(sampler, MOI.NumberOfVariables())
+    ibm_backend  = MOI.get(sampler, VQE.IBMBackend())
+    entanglement = MOI.get(sampler, VQE.Entanglement())
+
+    # -*- Load Credentials -*- #
     qiskit.IBMQ.load_account()
 
+    # -*- Connect to provider -*- #
     provider = qiskit.IBMQ.get_provider()
     backend  = provider.get_backend(ibm_backend)
-    SPSA = qiskit_algorithms.optimizers.SPSA(maxiter=50)
+    SPSA     = qiskit_algorithms.optimizers.SPSA(maxiter = max_iter)
 
+    # -*- Setup Ansatz -*- #
     ansatz = qiskit.circuit.library.EfficientSU2(
-        num_qubits=num_qubits, 
-        reps=1, 
-        entanglement="linear"
+        num_qubits   = num_qubits,
+        reps         = num_reps,
+        entanglement = entanglement,
     )
 
+    # -*- Setup VQE Client -*- #
     client = qiskit_optimization_runtime.VQEClient(
-        provider = provider,
-        backend = backend,
-        ansatz = ansatz,
+        provider  = provider,
+        backend   = backend,
+        ansatz    = ansatz,
         optimizer = SPSA,
-        shots = shots
+        shots     = num_shots,
     )
 
     callback(client)

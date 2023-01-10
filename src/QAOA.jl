@@ -1,7 +1,13 @@
 module QAOA
 
 using Anneal
-using ..QiskitOpt: qiskit, qiskit_optimization, qiskit_optimization_algorithms
+using Random
+using PythonCall: pyconvert
+using ..QiskitOpt:
+    qiskit,
+    qiskit_optimization,
+    qiskit_optimization_algorithms,
+    quadratic_program
 
 Anneal.@anew Optimizer begin
     name = "IBM Qiskit QAOA"
@@ -22,27 +28,10 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
     ibm_backend = MOI.get(sampler, QAOA.IBMBackend())
 
     # -*- Retrieve Model -*- #
-    Q, α, β = Anneal.qubo(sampler, Dict)
+    qp, α, β = quadratic_program(sampler)
 
-    linear    = PythonCall.pydict()
-    quadratic = PythonCall.pydict()
-
-    for ((i, j), q) in Q
-        if i == j
-            linear[string(i)] = q
-        else
-            quadratic[string(i), string(j)] = q
-        end
-    end
-
-    # -*- Build Qiskit Model -*- #
-    qp = qiskit_optimization.QuadraticProgram()
-
-    for v in string.(Anneal.indices(sampler))
-        qp.binary_var(v)
-    end
-
-    qp.minimize(linear = linear, quadratic = quadratic)
+    # -*- Instantiate Random Generator -*- #
+    rng = Random.Xoshiro(seed)
 
     # Results vector
     samples = Vector{Anneal.Sample{T,Int}}(undef, num_reads)
@@ -51,7 +40,7 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
     time_data = Dict{String,Any}()
 
     # Connect to IBMQ and get backend
-    connect_qaoa(ibm_backend) do client
+    connect(sampler) do client
         qaoa    = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
         results = qaoa.solve(qp)
 
@@ -71,35 +60,51 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
         P = cumsum(ρ)
 
         for i = 1:num_reads
-            p = rand()
+            p = rand(rng)
             j = first(searchsorted(P, p))
 
             samples[i] = Sample{T}(Ψ[j], Λ[j])
         end
 
-        time_data["effective"] =
-            pyconvert(Float64, results.min_eigen_solver_result.optimizer_time)
+        time_data["effective"] = pyconvert(
+            Float64,
+            results.min_eigen_solver_result.optimizer_time,
+        )
 
         return nothing
     end
 
-    metadata = Dict{String,Any}("time"   => time_data, "origin" => "IBMQ @ $(ibm_backend)")
+    metadata = Dict{String,Any}(
+        "origin" => "IBMQ QAOA @ $(ibm_backend)",
+        "time"   => time_data,
+    )
 
     return Anneal.SampleSet{T}(samples, metadata)
 end
 
-function connect_qaoa(callback::Function, ibm_backend::String)
+function connect(
+    callback::Function,
+    sampler::Optimizer,
+)
+    # -*- Retrieve Attributes -*- #
+    ibm_backend = MOI.get(sampler, QAOA.IBMBackend())
+
+    # -*- Load Credentials -*- #
     qiskit.IBMQ.load_account()
 
+    # -*- Connect to provider -*- #
     provider = qiskit.IBMQ.get_provider()
     backend  = provider.get_backend(ibm_backend)
 
-    client = qiskit_optimization_runtime.QAOAClient(provider = provider, backend = backend)
+    # -*- Setup QAOA Client -*- #
+    client = qiskit_optimization_runtime.QAOAClient(
+        provider = provider,
+        backend  = backend,
+    )
 
     callback(client)
 
     return nothing
 end
-
 
 end # module QAOA
