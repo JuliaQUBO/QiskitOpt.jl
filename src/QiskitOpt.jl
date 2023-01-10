@@ -30,20 +30,6 @@ function __init__()
     end
 end
 
-
-function connect(callback::Function, ibm_backend::String)
-    qiskit.IBMQ.load_account()
-
-    provider = qiskit.IBMQ.get_provider()
-    backend  = provider.get_backend(ibm_backend)
-
-    client = qiskit_optimization_runtime.QAOAClient(provider = provider, backend = backend)
-
-    callback(client)
-
-    return nothing
-end
-
 include("QAOA.jl")
 include("VQE.jl")
 

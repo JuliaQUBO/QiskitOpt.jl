@@ -1,7 +1,7 @@
 module QAOA
 
 using Anneal
-using ..QiskitOpt: connect, qiskit, qiskit_optimization, qiskit_optimization_algorithms
+using ..QiskitOpt: qiskit, qiskit_optimization, qiskit_optimization_algorithms
 
 Anneal.@anew Optimizer begin
     name = "IBM Qiskit QAOA"
@@ -51,7 +51,7 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
     time_data = Dict{String,Any}()
 
     # Connect to IBMQ and get backend
-    connect(ibm_backend) do client
+    connect_qaoa(ibm_backend) do client
         qaoa    = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
         results = qaoa.solve(qp)
 
@@ -87,5 +87,19 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
 
     return Anneal.SampleSet{T}(samples, metadata)
 end
+
+function connect_qaoa(callback::Function, ibm_backend::String)
+    qiskit.IBMQ.load_account()
+
+    provider = qiskit.IBMQ.get_provider()
+    backend  = provider.get_backend(ibm_backend)
+
+    client = qiskit_optimization_runtime.QAOAClient(provider = provider, backend = backend)
+
+    callback(client)
+
+    return nothing
+end
+
 
 end # module QAOA
