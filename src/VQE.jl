@@ -1,7 +1,7 @@
 module VQE
 
 using Anneal
-using PythonCall
+using ..QiskitOpt: connect, qiskit, qiskit_optimization
 
 Anneal.@anew Optimizer begin
     name    = "VQE @ IBMQ"
@@ -14,5 +14,5 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
 
     return Anneal.SampleSet{T}()
 end
-    
+
 end # module VQE
