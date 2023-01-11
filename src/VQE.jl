@@ -28,8 +28,9 @@ end
 
 function Anneal.sample(sampler::Optimizer{T}) where {T}
     # -*- Retrieve Attributes - *-
-    seed      = MOI.get(sampler, VQE.RandomSeed())
-    num_reads = MOI.get(sampler, VQE.NumberOfReads())
+    seed        = MOI.get(sampler, VQE.RandomSeed())
+    num_reads   = MOI.get(sampler, VQE.NumberOfReads())
+    ibm_backend = MOI.get(sampler, VQE.IBMBackend())
 
     # -*- Instantiate Random Generator -*- #
     rng = Random.Xoshiro(seed)
