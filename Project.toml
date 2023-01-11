@@ -1,14 +1,17 @@
-name = "QiskitOpt"
-uuid = "81b20daf-e62b-4502-a0d1-aa084de80e33"
-authors = ["Pedro Maciel Xavier <pedroxavier@psr-inc.com>"]
+name    = "QiskitOpt"
+uuid    = "81b20daf-e62b-4502-a0d1-aa084de80e33"
+authors = [
+    "pedromxavier <pedroxavier@psr-inc.com>",
+    "pedroripper <pedroripper@psr-inc.com>",
+]
 version = "0.1.0"
 
 [deps]
-Anneal = "e4d9eb7f-b088-426e-aeb5-1c0dae3d8abb"
+Anneal     = "e4d9eb7f-b088-426e-aeb5-1c0dae3d8abb"
 PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Random     = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
-Anneal = "0.6"
+Anneal     = "0.6"
 PythonCall = "0.9"
-julia = "1.6"
+julia      = "1.6"
