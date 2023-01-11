@@ -5,7 +5,6 @@ using Anneal
 using PythonCall: pyconvert
 using ..QiskitOpt:
     qiskit,
-    qiskit_optimization,
     qiskit_optimization_algorithms,
     qiskit_algorithms,
     qiskit_optimization_runtime,

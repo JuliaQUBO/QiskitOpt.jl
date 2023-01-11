@@ -5,8 +5,8 @@ using Random
 using PythonCall: pyconvert
 using ..QiskitOpt:
     qiskit,
-    qiskit_optimization,
     qiskit_optimization_algorithms,
+    qiskit_optimization_runtime,
     quadratic_program
 
 Anneal.@anew Optimizer begin
