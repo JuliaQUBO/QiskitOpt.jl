@@ -7,7 +7,7 @@ IBM Qiskit Optimization Wrapper for JuMP (ft. [Anneal.jl](https://github.com/psr
 ```julia
 julia> import Pkg
 
-julia> Pkg.add(url="https://github.com/psrenergy/QiskitOpt.jl")
+julia> Pkg.add("QiskitOpt.jl")
 ```
 
 ## Basic Usage
