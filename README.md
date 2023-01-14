@@ -1,4 +1,6 @@
 # QiskitOpt.jl
+[![DOI](https://zenodo.org/badge/587349377.svg)](https://zenodo.org/badge/latestdoi/587349377)
+
 IBM Qiskit Optimization Wrapper for JuMP (ft. [Anneal.jl](https://github.com/psrenergy/Anneal.jl))
 
 ## Installation
