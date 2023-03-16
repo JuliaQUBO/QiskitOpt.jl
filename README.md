@@ -13,7 +13,7 @@ julia> Pkg.add("QiskitOpt.jl")
 ## Basic Usage
 ```julia
 using JuMP
-using QistkitOpt
+using QiskitOpt
 
 # Using QAOA
 model = Model(QiskitOpt.QAOA.Optimizer)
@@ -49,16 +49,16 @@ from qiskit import IBMQ
 IBMQ.save_account("YOUR_TOKEN_HERE")
 ```
 
-Another option is to set the `IBMQ_API_TOKEN` environment variable before loading `QistkitOpt.jl`:
+Another option is to set the `IBMQ_API_TOKEN` environment variable before loading `QiskitOpt.jl`:
 ```shell
 $ export IBQM_API_TOKEN=YOUR_TOKEN_HERE
 
 $ julia
 
-julia> using QistkitOpt
+julia> using QiskitOpt
 ```
 
 **Disclaimer:** _The IBM Qiskit Optimization Wrapper for Julia is not officially supported by IBM. If you are a commercial customer interested in official support for Julia from IBM, let them know!_
 
-**Note**: _If you are using [QistkitOpt.jl](https://github.com/psrenergy/QiskitOpt.jl) in your project, we recommend you to include the `.CondaPkg` entry in your `.gitignore` file. The PythonCall module will place a lot of files in this folder when building its Python environment._
+**Note**: _If you are using [QiskitOpt.jl](https://github.com/psrenergy/QiskitOpt.jl) in your project, we recommend you to include the `.CondaPkg` entry in your `.gitignore` file. The PythonCall module will place a lot of files in this folder when building its Python environment._
 
