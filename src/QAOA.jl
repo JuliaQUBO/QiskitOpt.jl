@@ -10,9 +10,9 @@ using ..QiskitOpt:
     quadratic_program
 
 Anneal.@anew Optimizer begin
-    name = "IBM Qiskit QAOA"
-    sense = :min
-    domain = :bool
+    name    = "IBM Qiskit QAOA"
+    sense   = :min
+    domain  = :bool
     version = v"0.4.0"
     attributes = begin
         NumberOfReads["num_reads"]::Integer        = 1_000
