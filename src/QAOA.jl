@@ -1,6 +1,5 @@
 module QAOA
 
-using Anneal
 using Random
 using PythonCall: pyconvert
 using ..QiskitOpt:
@@ -8,8 +7,16 @@ using ..QiskitOpt:
     qiskit_optimization_algorithms,
     qiskit_optimization_runtime,
     quadratic_program
+import QUBODrivers:
+    MOI,
+    QUBODrivers,
+    QUBOTools,
+    Sample,
+    SampleSet,
+    @setup,
+    sample
 
-Anneal.@anew Optimizer begin
+@setup Optimizer begin
     name    = "IBM Qiskit QAOA"
     sense   = :min
     domain  = :bool
@@ -21,7 +28,7 @@ Anneal.@anew Optimizer begin
     end
 end
 
-function Anneal.sample(sampler::Optimizer{T}) where {T}
+function sample(sampler::Optimizer{T}) where {T}
     # -*- Retrieve Attributes - *-
     seed        = MOI.get(sampler, QAOA.RandomSeed())
     num_reads   = MOI.get(sampler, QAOA.NumberOfReads())
@@ -34,10 +41,13 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
     rng = Random.Xoshiro(seed)
 
     # Results vector
-    samples = Vector{Anneal.Sample{T,Int}}(undef, num_reads)
+    samples = Vector{Sample{T,Int}}(undef, num_reads)
 
     # Timing Information 
-    time_data = Dict{String,Any}()
+    metadata = Dict{String,Any}(
+        "origin" => "IBMQ QAOA @ $(ibm_backend)",
+        "time"   => Dict{String,Any}(), 
+    )
 
     # Connect to IBMQ and get backend
     connect(sampler) do client
@@ -66,7 +76,7 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
             samples[i] = Sample{T}(Ψ[j], Λ[j])
         end
 
-        time_data["effective"] = pyconvert(
+        metadata["time"]["effective"] = pyconvert(
             Float64,
             results.min_eigen_solver_result.optimizer_time,
         )
@@ -74,12 +84,7 @@ function Anneal.sample(sampler::Optimizer{T}) where {T}
         return nothing
     end
 
-    metadata = Dict{String,Any}(
-        "origin" => "IBMQ QAOA @ $(ibm_backend)",
-        "time"   => time_data,
-    )
-
-    return Anneal.SampleSet{T}(samples, metadata)
+    return SampleSet{T}(samples, metadata)
 end
 
 function connect(

@@ -1,7 +1,8 @@
 # QiskitOpt.jl
 [![DOI](https://zenodo.org/badge/587349377.svg)](https://zenodo.org/badge/latestdoi/587349377)
+[![QUBODRIVERS](https://img.shields.io/badge/Powered%20by-QUBODrivers.jl-%20%234063d8)](https://github.com/psrenergy/QUBODrivers.jl)
 
-IBM Qiskit Optimization Wrapper for JuMP (ft. [Anneal.jl](https://github.com/psrenergy/Anneal.jl))
+IBM Qiskit Optimization Wrapper for JuMP
 
 ## Installation
 ```julia

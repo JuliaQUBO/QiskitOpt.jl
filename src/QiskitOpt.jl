@@ -1,9 +1,9 @@
 module QiskitOpt
 
-using Anneal
 using PythonCall
+import QUBODrivers: MOI, QUBODrivers, QUBOTools
 
-# -*- :: Python Qiskit Modules :: -*- #
+# :: Python Qiskit Modules ::
 const qiskit                         = PythonCall.pynew()
 const qiskit_algorithms              = PythonCall.pynew()
 const qiskit_optimization            = PythonCall.pynew()
@@ -12,7 +12,7 @@ const qiskit_optimization_runtime    = PythonCall.pynew()
 const qiskit_utils                   = PythonCall.pynew()
 
 function __init__()
-    # -*- Load Python Packages -*- #
+    # Load Python Packages
     PythonCall.pycopy!(qiskit, pyimport("qiskit"))
     PythonCall.pycopy!(qiskit_algorithms, pyimport("qiskit.algorithms"))
     PythonCall.pycopy!(qiskit_optimization, pyimport("qiskit_optimization"))
@@ -23,7 +23,7 @@ function __init__()
     PythonCall.pycopy!(qiskit_optimization_runtime, pyimport("qiskit_optimization.runtime"))
     PythonCall.pycopy!(qiskit_utils, pyimport("qiskit.utils"))
 
-    # -*- IBMQ Credentials -*- #
+    # IBMQ Credentials
     IBMQ_API_TOKEN = get(ENV, "IBMQ_API_TOKEN", nothing)
 
     if !isnothing(IBMQ_API_TOKEN)
@@ -31,11 +31,11 @@ function __init__()
     end
 end
 
-function quadratic_program(sampler::Anneal.AbstractSampler{T}) where {T}
-    # -*- Retrieve Model -*- #
-    Q, α, β = Anneal.qubo(sampler, Dict)
+function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
+    # Retrieve Model
+    Q, α, β = QUBODrivers.qubo(sampler, Dict)
 
-    # -*- Build Qiskit Model -*- #
+    # Build Qiskit Model
     linear    = PythonCall.pydict()
     quadratic = PythonCall.pydict()
 
@@ -49,7 +49,7 @@ function quadratic_program(sampler::Anneal.AbstractSampler{T}) where {T}
 
     qp = qiskit_optimization.QuadraticProgram()
 
-    for v in string.(Anneal.indices(sampler))
+    for v in string.(QUBOTools.indices(sampler))
         qp.binary_var(v)
     end
 

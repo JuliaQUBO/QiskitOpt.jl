@@ -1,4 +1,4 @@
-using QiskitOpt
+using QiskitOpt: QUBODrivers, QAOA, VQE
 
-QiskitOpt.QAOA.test(; examples=true)
-QiskitOpt.VQE.test(; examples=true)
+QUBODrivers.test(QAOA.Optimizer)
+QUBODrivers.test(VQE.Optimizer)
