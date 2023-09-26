@@ -59,28 +59,9 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     return (qp, α, β)
 end
 
-function classical_optimizer(name::String)
-    if name == "COBYLA"
-        return qiskit_algorithms.optimizers.COBYLA()
-    elseif name == "SPSA"
-        return qiskit_algorithms.optimizers.SLSQP()
-    end
-    error("Classical Optimizer $(name) not supported")
-end
+export  QAOA, VQE
 
-function ansatz(name::String)
-    if name == "EfficientSU2"
-        return qiskit_optimization.algorithms.EfficientSU2()
-    elseif name == "RYRZ"
-        return qiskit_optimization.algorithms.RYRZ()
-    end
-    error("Ansatz $(name) not supported")
-end
-
-
-export VQE
-
-# include("QAOA.jl")
+include("QAOA.jl")
 include("VQE.jl")
 
 end # module QiskitOpt

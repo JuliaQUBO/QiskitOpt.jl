@@ -1,34 +1,41 @@
 module QAOA
 
 using Random
-using PythonCall: pyconvert
+using PythonCall: pyconvert, pylist
 using ..QiskitOpt:
     qiskit,
     qiskit_optimization_algorithms,
-    qiskit_optimization_runtime,
-    quadratic_program
+    qiskit_algorithms,
+    qiskit_ibm_runtime,
+    quadratic_program,
+    qiskit_minimum_eigensolvers
 import QUBODrivers:
     MOI,
     QUBODrivers,
     QUBOTools,
     Sample,
-    SampleSet,
-    @setup,
-    sample
+    SampleSet
 
-@setup Optimizer begin
-    name    = "IBM Qiskit QAOA"
-    sense   = :min
-    domain  = :bool
-    version = v"0.4.0"
+QUBODrivers.@setup Optimizer begin
+    name    = "QAOA @ IBMQ"
     attributes = begin
         NumberOfReads["num_reads"]::Integer        = 1_000
-        RandomSeed["seed"]::Union{Integer,Nothing} = nothing
+        MaximumIterations["max_iter"]::Integer     = 15
+        NumberOfRepetitions["num_reps"]::Integer   = 1
+        RandomSeed["seed"]::Union{Integer, Nothing}                = nothing
+        InitialPoint["initial_point"]::Union{Vector{Float64}, Nothing} = nothing 
         IBMBackend["ibm_backend"]::String          = "ibmq_qasm_simulator"
+        Entanglement["entanglement"]::String       = "linear"
+        Channel["channel"]::String                 = "ibm_quantum"
+        Instance["instance"]::String               = "ibm-q/open/main"
+        ClassicalOptimizer["optimizer"]            = qiskit_algorithms.optimizers.COBYLA
+        Ansatz["ansatz"]                           = qiskit.circuit.library.QAOAAnsatz
+        IterationCallback["iteration_callback"]::Vector{Int}    = []
+        ValueCallback["value_callback"]::Vector{Float64}        = []
     end
 end
 
-function sample(sampler::Optimizer{T}) where {T}
+function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # -*- Retrieve Attributes - *-
     seed        = MOI.get(sampler, QAOA.RandomSeed())
     num_reads   = MOI.get(sampler, QAOA.NumberOfReads())
@@ -47,12 +54,15 @@ function sample(sampler::Optimizer{T}) where {T}
     metadata = Dict{String,Any}(
         "origin" => "IBMQ QAOA @ $(ibm_backend)",
         "time"   => Dict{String,Any}(), 
+        "evals"  => Vector{Float64}(),
     )
 
     # Connect to IBMQ and get backend
     connect(sampler) do client
-        qaoa    = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
-        results = qaoa.solve(qp)
+        results = client
+
+        iteration_callback = MOI.get(sampler, QAOA.IterationCallback())
+        value_callback = MOI.get(sampler, QAOA.ValueCallback())
 
         Ψ = Vector{Int}[]
         ρ = Float64[]
@@ -81,6 +91,8 @@ function sample(sampler::Optimizer{T}) where {T}
             results.min_eigen_solver_result.optimizer_time,
         )
 
+        metadata["evals"] = pyconvert(Vector{Float64}, value_callback)
+
         return nothing
     end
 
@@ -89,25 +101,57 @@ end
 
 function connect(
     callback::Function,
-    sampler::Optimizer,
-)
+    sampler::Optimizer{T},
+) where {T}
     # -*- Retrieve Attributes -*- #
-    ibm_backend = MOI.get(sampler, QAOA.IBMBackend())
+    max_iter        = MOI.get(sampler, QAOA.MaximumIterations())
+    num_reps        = MOI.get(sampler, QAOA.NumberOfRepetitions())
+    num_qubits      = MOI.get(sampler, MOI.NumberOfVariables())
+    ibm_backend     = MOI.get(sampler, QAOA.IBMBackend())
+    entanglement    = MOI.get(sampler, QAOA.Entanglement())
+    classical_opt   = MOI.get(sampler, QAOA.ClassicalOptimizer())
+    channel         = MOI.get(sampler, QAOA.Channel())
+    instance        = MOI.get(sampler, QAOA.Instance())
+    # initial_point   = MOI.get(sampler, QAOA.InitialPoint())
+    reps            = MOI.get(sampler, QAOA.NumberOfRepetitions())
+    
+    # Set Optimizer
+    optimizer = classical_opt(maxiter = max_iter)
 
-    # -*- Load Credentials -*- #
-    qiskit.IBMQ.load_account()
+    service = qiskit_ibm_runtime.QiskitRuntimeService(
+        channel  = channel,
+        instance = instance,
+    )   
 
-    # -*- Connect to provider -*- #
-    provider = qiskit.IBMQ.get_provider()
-    backend  = provider.get_backend(ibm_backend)
+    session   = qiskit_ibm_runtime.Session(service=service, backend=ibm_backend)
+    qiskit_sampler   = qiskit_ibm_runtime.Sampler(session=session)
 
-    # -*- Setup QAOA Client -*- #
-    client = qiskit_optimization_runtime.QAOAClient(
-        provider = provider,
-        backend  = backend,
+    counts = pylist()
+    values = pylist()
+
+    function _store_intermediate_results(eval_count, parameters, mean, std)
+        counts.append(eval_count)
+        values.append(mean)
+    end
+
+    # Setup QAOA
+    qaoa = qiskit_minimum_eigensolvers.QAOA(
+        sampler = qiskit_sampler,
+        optimizer=optimizer,
+        reps = reps,
+        callback = _store_intermediate_results
     )
 
-    callback(client)
+    qp, _, _ = quadratic_program(sampler)
+
+    quantum_optimizer = qiskit_optimization_algorithms.MinimumEigenOptimizer(qaoa)
+
+    results = quantum_optimizer.solve(qp)
+
+    MOI.set(sampler, QAOA.ValueCallback(), pyconvert(Vector{Float64}, values))
+    MOI.set(sampler, QAOA.IterationCallback(), pyconvert(Vector{Int}, counts))
+
+    callback(results)
 
     return nothing
 end
