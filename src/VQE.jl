@@ -1,39 +1,41 @@
 module VQE
 
 using Random
-using PythonCall: pyconvert
+using PythonCall: pyconvert, pylist
 using ..QiskitOpt:
     qiskit,
     qiskit_optimization_algorithms,
     qiskit_algorithms,
-    qiskit_optimization_runtime,
-    quadratic_program
+    qiskit_ibm_runtime,
+    quadratic_program,
+    qiskit_minimum_eigensolvers
 import QUBODrivers:
     MOI,
     QUBODrivers,
     QUBOTools,
     Sample,
-    SampleSet,
-    @setup,
-    sample
+    SampleSet
 
-@setup Optimizer begin
+QUBODrivers.@setup Optimizer begin
     name    = "VQE @ IBMQ"
-    sense   = :min
-    domain  = :bool
-    version = v"0.4.0"
     attributes = begin
         NumberOfReads["num_reads"]::Integer        = 1_000
-        NumberOfShots["num_shots"]::Integer        = 1_024
-        MaximumIterations["max_iter"]::Integer     = 50
+        MaximumIterations["max_iter"]::Integer     = 15
         NumberOfRepetitions["num_reps"]::Integer   = 1
-        RandomSeed["seed"]::Union{Integer,Nothing} = nothing
+        RandomSeed["seed"]::Union{Integer, Nothing}                = nothing
+        InitialPoint["initial_point"]::Union{Vector{Float64}, Nothing} = nothing 
         IBMBackend["ibm_backend"]::String          = "ibmq_qasm_simulator"
         Entanglement["entanglement"]::String       = "linear"
+        Channel["channel"]::String                 = "ibm_quantum"
+        Instance["instance"]::String               = "ibm-q/open/main"
+        ClassicalOptimizer["optimizer"]            = qiskit_algorithms.optimizers.COBYLA
+        Ansatz["ansatz"]                           = qiskit.circuit.library.EfficientSU2
+        IterationCallback["iteration_callback"]::Vector{Int}    = []
+        ValueCallback["value_callback"]::Vector{Float64}        = []
     end
 end
 
-function sample(sampler::Optimizer{T}) where {T}
+function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Retrieve Attribute
     seed        = MOI.get(sampler, VQE.RandomSeed())
     num_reads   = MOI.get(sampler, VQE.NumberOfReads())
@@ -51,13 +53,16 @@ function sample(sampler::Optimizer{T}) where {T}
     # Extra Information 
     metadata = Dict{String,Any}(
         "origin" => "IBMQ VQE @ $(ibm_backend)",
-        "time"   => Dict{String,Any}(), 
+        "time"   => Dict{String,Any}(),
+        "evals"  => Vector{Float64}(),
     )
 
     # Connect to IBMQ and get backend
     connect(sampler) do client
-        vqe     = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
-        results = vqe.solve(qp)
+        results = client
+
+        iteration_callback = MOI.get(sampler, VQE.IterationCallback())
+        value_callback = MOI.get(sampler, VQE.ValueCallback())
 
         Ψ = Vector{Int}[]
         ρ = Float64[]
@@ -86,6 +91,8 @@ function sample(sampler::Optimizer{T}) where {T}
             results.min_eigen_solver_result.optimizer_time
         )
 
+        metadata["evals"] = pyconvert(Vector{Float64}, value_callback)
+
         return nothing
     end
 
@@ -94,41 +101,69 @@ end
 
 function connect(
     callback::Function,
-    sampler::Optimizer,
-)
+    sampler::Optimizer{T},
+) where {T}
     # Retrieve Attributes
-    num_shots    = MOI.get(sampler, VQE.NumberOfShots())
-    max_iter     = MOI.get(sampler, VQE.MaximumIterations())
-    num_reps     = MOI.get(sampler, VQE.NumberOfRepetitions())
-    num_qubits   = MOI.get(sampler, MOI.NumberOfVariables())
-    ibm_backend  = MOI.get(sampler, VQE.IBMBackend())
-    entanglement = MOI.get(sampler, VQE.Entanglement())
-
-    # Load Credentials
-    qiskit.IBMQ.load_account()
-
-    # Connect to provider
-    provider = qiskit.IBMQ.get_provider()
-    backend  = provider.get_backend(ibm_backend)
-    SPSA     = qiskit_algorithms.optimizers.SPSA(maxiter = max_iter)
-
+    max_iter        = MOI.get(sampler, VQE.MaximumIterations())
+    num_reps        = MOI.get(sampler, VQE.NumberOfRepetitions())
+    num_qubits      = MOI.get(sampler, MOI.NumberOfVariables())
+    ibm_backend     = MOI.get(sampler, VQE.IBMBackend())
+    entanglement    = MOI.get(sampler, VQE.Entanglement())
+    ansatz_instance = MOI.get(sampler, VQE.Ansatz())
+    classical_opt   = MOI.get(sampler, VQE.ClassicalOptimizer())
+    channel         = MOI.get(sampler, VQE.Channel())
+    instance        = MOI.get(sampler, VQE.Instance())
+    initial_point   = MOI.get(sampler, VQE.InitialPoint())
+    
+    # Set Optimizer
+    optimizer = classical_opt(maxiter = max_iter)
+    
     # Setup Ansatz
-    ansatz = qiskit.circuit.library.EfficientSU2(
+    ansatz = ansatz_instance(
         num_qubits   = num_qubits,
         reps         = num_reps,
         entanglement = entanglement,
+        )
+        
+    if isnothing(initial_point)
+        initial_point = pylist(rand(pyconvert(Int, ansatz.num_parameters)))
+    end
+
+    service = qiskit_ibm_runtime.QiskitRuntimeService(
+        channel  = channel,
+        instance = instance,
+    )   
+
+    session   = qiskit_ibm_runtime.Session(service=service, backend=ibm_backend)
+    qiskit_sampler   = qiskit_ibm_runtime.Sampler(session=session)
+
+    counts = pylist()
+    values = pylist()
+
+    function _store_intermediate_results(eval_count, parameters, mean, std)
+        counts.append(eval_count)
+        values.append(mean)
+    end
+
+    # Setup VQE
+    vqe = qiskit_minimum_eigensolvers.SamplingVQE(
+        sampler = qiskit_sampler,
+        ansatz=ansatz,
+        optimizer=optimizer,
+        initial_point=initial_point,
+        # callback = _store_intermediate_results
     )
 
-    # Setup VQE Client
-    client = qiskit_optimization_runtime.VQEClient(
-        provider  = provider,
-        backend   = backend,
-        ansatz    = ansatz,
-        optimizer = SPSA,
-        shots     = num_shots,
-    )
+    qp, _, _ = quadratic_program(sampler)
 
-    callback(client)
+    quantum_optimizer = qiskit_optimization_algorithms.MinimumEigenOptimizer(vqe)
+
+    results = quantum_optimizer.solve(qp)
+
+    MOI.set(sampler, VQE.ValueCallback(), pyconvert(Vector{Float64}, values))
+    MOI.set(sampler, VQE.IterationCallback(), pyconvert(Vector{Int}, counts))
+
+    callback(results)
 
     return nothing
 end

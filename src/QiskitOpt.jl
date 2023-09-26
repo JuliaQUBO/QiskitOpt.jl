@@ -8,8 +8,9 @@ const qiskit                         = PythonCall.pynew()
 const qiskit_algorithms              = PythonCall.pynew()
 const qiskit_optimization            = PythonCall.pynew()
 const qiskit_optimization_algorithms = PythonCall.pynew()
-const qiskit_optimization_runtime    = PythonCall.pynew()
+const qiskit_ibm_runtime             = PythonCall.pynew()
 const qiskit_utils                   = PythonCall.pynew()
+const qiskit_minimum_eigensolvers                            = PythonCall.pynew()
 
 function __init__()
     # Load Python Packages
@@ -20,8 +21,9 @@ function __init__()
         qiskit_optimization_algorithms,
         pyimport("qiskit_optimization.algorithms"),
     )
-    PythonCall.pycopy!(qiskit_optimization_runtime, pyimport("qiskit_optimization.runtime"))
+    PythonCall.pycopy!(qiskit_ibm_runtime, pyimport("qiskit_ibm_runtime"))
     PythonCall.pycopy!(qiskit_utils, pyimport("qiskit.utils"))
+    PythonCall.pycopy!(qiskit_minimum_eigensolvers, pyimport("qiskit.algorithms.minimum_eigensolvers"))
 
     # IBMQ Credentials
     IBMQ_API_TOKEN = get(ENV, "IBMQ_API_TOKEN", nothing)
@@ -33,18 +35,17 @@ end
 
 function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     # Retrieve Model
-    Q, α, β = QUBODrivers.qubo(sampler, Dict)
+    n, h, J, α, β = QUBOTools.qubo(sampler, :dict; sense = :min)
 
     # Build Qiskit Model
     linear    = PythonCall.pydict()
     quadratic = PythonCall.pydict()
 
-    for ((i, j), q) in Q
-        if i == j
-            linear[string(i)] = q
-        else
-            quadratic[string(i), string(j)] = q
-        end
+    for (i, val) in h
+        linear[string(i)] = val
+    end
+    for ((i, j), val) in J
+        quadratic[string(i), string(j)] = val
     end
 
     qp = qiskit_optimization.QuadraticProgram()
@@ -58,9 +59,28 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     return (qp, α, β)
 end
 
-export QAOA, VQE
+function classical_optimizer(name::String)
+    if name == "COBYLA"
+        return qiskit_algorithms.optimizers.COBYLA()
+    elseif name == "SPSA"
+        return qiskit_algorithms.optimizers.SLSQP()
+    end
+    error("Classical Optimizer $(name) not supported")
+end
 
-include("QAOA.jl")
+function ansatz(name::String)
+    if name == "EfficientSU2"
+        return qiskit_optimization.algorithms.EfficientSU2()
+    elseif name == "RYRZ"
+        return qiskit_optimization.algorithms.RYRZ()
+    end
+    error("Ansatz $(name) not supported")
+end
+
+
+export VQE
+
+# include("QAOA.jl")
 include("VQE.jl")
 
 end # module QiskitOpt
