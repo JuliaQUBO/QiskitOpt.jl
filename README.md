@@ -45,9 +45,9 @@ end
 To access IBM's Quantum Computers, it is necessary to create an account at [IBM Q](https://quantum-computing.ibm.com/) to obtain an API Token and run the following python code:
 
 ```python
-from qiskit import IBMQ
+from qiskit_ibm_runtime import QiskitRuntimeService
 
-IBMQ.save_account("YOUR_TOKEN_HERE")
+QiskitRuntimeService.save_account(channel='ibm_quantum', token="YOUR_TOKEN_HERE")
 ```
 
 Another option is to set the `IBMQ_API_TOKEN` environment variable before loading `QiskitOpt.jl`:
