@@ -61,9 +61,6 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     connect(sampler) do client
         results = client
 
-        iteration_callback = MOI.get(sampler, VQE.IterationCallback())
-        value_callback = MOI.get(sampler, VQE.ValueCallback())
-
         Ψ = Vector{Int}[]
         ρ = Float64[]
         Λ = T[]
@@ -90,8 +87,6 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
             Float64,
             results.min_eigen_solver_result.optimizer_time
         )
-
-        metadata["evals"] = pyconvert(Vector{Float64}, value_callback)
 
         return nothing
     end
@@ -151,16 +146,16 @@ function connect(
         ansatz=ansatz,
         optimizer=optimizer,
         initial_point=initial_point,
-        # callback = _store_intermediate_results
+        callback = _store_intermediate_results
     )
 
-    qp, _, _ = quadratic_program(sampler)
+    qp, α, β = quadratic_program(sampler)
 
     quantum_optimizer = qiskit_optimization_algorithms.MinimumEigenOptimizer(vqe)
 
     results = quantum_optimizer.solve(qp)
 
-    MOI.set(sampler, VQE.ValueCallback(), pyconvert(Vector{Float64}, values))
+    MOI.set(sampler, VQE.ValueCallback(), α *(pyconvert(Vector{Float64}, values) .+ β))
     MOI.set(sampler, VQE.IterationCallback(), pyconvert(Vector{Int}, counts))
 
     callback(results)
