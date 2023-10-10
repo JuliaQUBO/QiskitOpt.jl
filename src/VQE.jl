@@ -58,7 +58,7 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     )
 
     # Connect to IBMQ and get backend
-    connect(sampler) do client
+    retrieve(sampler) do job_results
         results = client
 
         Ψ = Vector{Int}[]
@@ -94,7 +94,7 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     return SampleSet{T}(samples, metadata)
 end
 
-function connect(
+function retieve(
     callback::Function,
     sampler::Optimizer{T},
 ) where {T}
