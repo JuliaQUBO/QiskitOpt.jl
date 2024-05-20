@@ -4,26 +4,21 @@ using PythonCall
 import QUBODrivers: MOI, QUBODrivers, QUBOTools
 
 # :: Python Qiskit Modules ::
-const qiskit                         = PythonCall.pynew()
-const qiskit_algorithms              = PythonCall.pynew()
-const qiskit_optimization            = PythonCall.pynew()
-const qiskit_optimization_algorithms = PythonCall.pynew()
-const qiskit_ibm_runtime             = PythonCall.pynew()
-const qiskit_utils                   = PythonCall.pynew()
-const qiskit_minimum_eigensolvers                            = PythonCall.pynew()
+const qiskit              = PythonCall.pynew()
+const qiskit_optimization = PythonCall.pynew()
+const qiskit_ibm_runtime  = PythonCall.pynew()
+const qiskit_algorithms   = PythonCall.pynew()
+const scipy               = PythonCall.pynew()
+const numpy               = PythonCall.pynew()
 
 function __init__()
     # Load Python Packages
     PythonCall.pycopy!(qiskit, pyimport("qiskit"))
-    PythonCall.pycopy!(qiskit_algorithms, pyimport("qiskit.algorithms"))
     PythonCall.pycopy!(qiskit_optimization, pyimport("qiskit_optimization"))
-    PythonCall.pycopy!(
-        qiskit_optimization_algorithms,
-        pyimport("qiskit_optimization.algorithms"),
-    )
     PythonCall.pycopy!(qiskit_ibm_runtime, pyimport("qiskit_ibm_runtime"))
-    PythonCall.pycopy!(qiskit_utils, pyimport("qiskit.utils"))
-    PythonCall.pycopy!(qiskit_minimum_eigensolvers, pyimport("qiskit.algorithms.minimum_eigensolvers"))
+    PythonCall.pycopy!(qiskit_algorithms, pyimport("qiskit_algorithms"))
+    PythonCall.pycopy!(scipy, pyimport("scipy"))
+    PythonCall.pycopy!(numpy, pyimport("numpy"))
 
     # IBMQ Credentials
     IBMQ_API_TOKEN = get(ENV, "IBMQ_API_TOKEN", nothing)
@@ -35,17 +30,17 @@ end
 
 function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     # Retrieve Model
-    n, h, J, α, β = QUBOTools.qubo(sampler, :dict; sense = :min)
+    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
 
     # Build Qiskit Model
     linear    = PythonCall.pydict()
     quadratic = PythonCall.pydict()
 
-    for (i, val) in h
-        linear[string(i)] = val
+    for i in 1:n
+        linear[string(i)] = L[i]
     end
-    for ((i, j), val) in J
-        quadratic[string(i), string(j)] = val
+    for i in 1:n, j in 1:n
+        quadratic[string(i), string(j)] = Q[i,j]
     end
 
     qp = qiskit_optimization.QuadraticProgram()
@@ -56,12 +51,12 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
 
     qp.minimize(linear = linear, quadratic = quadratic)
 
-    return (qp, α, β)
+    return return qp.to_ising()[0]
 end
 
-export  QAOA, VQE
+export  VQE
 
-include("QAOA.jl")
+# include("QAOA.jl")
 include("VQE.jl")
 
 end # module QiskitOpt

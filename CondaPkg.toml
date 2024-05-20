@@ -1,6 +1,9 @@
 channels = ["anaconda", "conda-forge"]
 
 [pip.deps]
-qiskit              = "==0.44.1"
-qiskit-optimization = "==0.5.0"
-qiskit-ibm-runtime = "==0.12.1"
+qiskit              = "==1.0.2"
+qiskit-optimization = "==0.6.1"
+qiskit-ibm-runtime = "==0.23.0"
+qiskit-algorithms   = "==0.3.0"
+scipy               = "==1.13.0"
+numpy               = "==1.26.0"

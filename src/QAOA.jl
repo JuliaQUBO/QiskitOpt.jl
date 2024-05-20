@@ -5,10 +5,8 @@ using PythonCall: pyconvert, pylist
 using ..QiskitOpt:
     qiskit,
     qiskit_optimization_algorithms,
-    qiskit_algorithms,
     qiskit_ibm_runtime,
-    quadratic_program,
-    qiskit_minimum_eigensolvers
+    quadratic_program
 import QUBODrivers:
     MOI,
     QUBODrivers,
@@ -28,7 +26,7 @@ QUBODrivers.@setup Optimizer begin
         Entanglement["entanglement"]::String       = "linear"
         Channel["channel"]::String                 = "ibm_quantum"
         Instance["instance"]::String               = "ibm-q/open/main"
-        ClassicalOptimizer["optimizer"]            = qiskit_algorithms.optimizers.COBYLA
+        ClassicalOptimizer["optimizer"]            = qiskit.algorithms.optimizers.COBYLA
         Ansatz["ansatz"]                           = qiskit.circuit.library.QAOAAnsatz
         IterationCallback["iteration_callback"]::Vector{Int}    = []
         ValueCallback["value_callback"]::Vector{Float64}        = []
@@ -130,7 +128,7 @@ function retrieve(
     end
 
     # Setup QAOA
-    qaoa = qiskit_minimum_eigensolvers.QAOA(
+    qaoa = qiskit.algorithms.QAOA(
         sampler = qiskit_sampler,
         optimizer=optimizer,
         reps = reps,
