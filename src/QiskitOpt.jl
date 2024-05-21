@@ -1,7 +1,8 @@
 module QiskitOpt
 
 using PythonCall
-import QUBODrivers: MOI, QUBODrivers, QUBOTools
+using QUBO
+MOI = QUBODrivers.MOI
 
 # :: Python Qiskit Modules ::
 const qiskit              = PythonCall.pynew()

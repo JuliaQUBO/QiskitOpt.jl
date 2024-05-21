@@ -21,7 +21,7 @@ QUBODrivers.@setup Optimizer begin
         MaximumIterations["max_iter"]::Integer     = 15
         NumberOfRepetitions["num_reps"]::Integer   = 1
         RandomSeed["seed"]::Union{Integer, Nothing}                = nothing
-        InitialPoint["initial_point"]::Union{Vector{Float64}, Nothing} = nothing 
+        InitialParameters["initial_parameters"]::Union{Vector{Float64}, Nothing} = nothing 
         IBMBackend["ibm_backend"]::String          = "ibmq_qasm_simulator"
         Entanglement["entanglement"]::String       = "linear"
         Channel["channel"]::String                 = "ibm_quantum"
@@ -105,7 +105,7 @@ function retrieve(
     classical_opt   = MOI.get(sampler, QAOA.ClassicalOptimizer())
     channel         = MOI.get(sampler, QAOA.Channel())
     instance        = MOI.get(sampler, QAOA.Instance())
-    # initial_point   = MOI.get(sampler, QAOA.InitialPoint())
+    # initial_parameters   = MOI.get(sampler, QAOA.InitialParameters())
     reps            = MOI.get(sampler, QAOA.NumberOfRepetitions())
     
     # Set Optimizer
