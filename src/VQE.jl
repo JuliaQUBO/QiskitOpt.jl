@@ -1,6 +1,5 @@
 module VQE
 
-using Random
 using LinearAlgebra
 using PythonCall: pyconvert, pylist, pydict, pyint, pytuple, @pyexec
 using ..QiskitOpt:
@@ -21,10 +20,11 @@ QUBODrivers.@setup Optimizer begin
     name    = "VQE @ IBMQ"
     attributes = begin
         MaximumIterations["max_iter"]::Integer     = 15
-        NumberOfReads["num_reads"]::Integer   = 1000
+        NumberOfReads["num_reads"]::Integer   = 100
         InitialParameters["initial_parameters"]::Union{Vector{Float64}, Nothing} = nothing 
-        IBMBackend["ibm_backend"]                  = "ibm_osaka"
-        IsSimulated["is_simulated"]::Bool          = false
+        IBMFakeBackend["ibm_fake_backend"]         = qiskit_ibm_runtime.fake_provider.FakeAlgiers
+        IBMBackend["ibm_backend"]::Union{String, Nothing}          = nothing
+        IsLocal["is_local"]::Bool          = false
         Channel["channel"]::String                 = "ibm_quantum"
         Instance["instance"]::String               = "ibm-q/open/main"
         Ansatz["ansatz"]                           = qiskit.circuit.library.EfficientSU2
@@ -34,7 +34,7 @@ end
 function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Retrieve Model
     n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
-    ibm_backend = MOI.get(sampler, QAOA.IBMBackend())
+    ibm_backend = MOI.get(sampler, VQE.IBMBackend())
 
 
     # Results vector
@@ -47,7 +47,6 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
         "evals"  => Vector{Float64}(),
     )
 
-    # Connect to IBMQ and get backend
     retrieve(sampler) do result, sample_results
 
         for key in sample_results.keys()
@@ -78,11 +77,12 @@ function retrieve(
     num_reads        = MOI.get(sampler, VQE.NumberOfReads())
     num_qubits      = MOI.get(sampler, MOI.NumberOfVariables())
     ibm_backend     = MOI.get(sampler, VQE.IBMBackend())
+    ibm_fake_backend = MOI.get(sampler, VQE.IBMFakeBackend())
     ansatz_instance = MOI.get(sampler, VQE.Ansatz())
     channel         = MOI.get(sampler, VQE.Channel())
     instance        = MOI.get(sampler, VQE.Instance())
     initial_parameters   = MOI.get(sampler, VQE.InitialParameters())
-    is_simulated    = MOI.get(sampler, VQE.IsSimulated())
+    is_local    = MOI.get(sampler, VQE.IsLocal())
 
     @pyexec """
     def cost_function(params, ansatz, hamiltonian, estimator):
@@ -97,10 +97,18 @@ function retrieve(
         instance = instance,
     )   
 
-    backend = service.get_backend(ibm_backend)
-
-    if is_simulated && ibm_backend != "ibmq_qasm_simulator"
-        backend = qiskit_aer.AerSimulator.from_backend(backend)
+    backend = if !isnothing(ibm_backend)
+        _backend = service.get_backend(ibm_backend)
+        if is_local && ibm_backend != "ibmq_qasm_simulator"
+            qiskit_aer.AerSimulator.from_backend(_backend)
+        else
+            _backend
+        end
+    else
+        _backend = ibm_fake_backend()
+        is_local = true
+        ibm_backend = _backend.backend_name
+        _backend
     end
 
     ising_hamiltonian = quadratic_program(sampler)
@@ -127,9 +135,11 @@ function retrieve(
 
     session = qiskit_ibm_runtime.Session(service=service, backend=backend)
     estimator = qiskit_ibm_runtime.EstimatorV2(session=session)
-    estimator.options.default_shots = num_reads
+    if !is_local
+        estimator.options.default_shots = num_reads
+    end
 
-    println("Sending QUBO to backend $(ibm_backend)...")
+    println("Running VQE on $(ibm_backend)...")
     scipy_options = pydict()
     scipy_options["maxiter"] = max_iter
     result = scipy.optimize.minimize(

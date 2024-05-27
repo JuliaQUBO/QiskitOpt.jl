@@ -57,9 +57,9 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     return return qp.to_ising()[0]
 end
 
-export  VQE
+export  VQE, QAOA
 
-# include("QAOA.jl")
+include("QAOA.jl")
 include("VQE.jl")
 
 end # module QiskitOpt
