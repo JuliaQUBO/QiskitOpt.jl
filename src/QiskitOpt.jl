@@ -28,7 +28,7 @@ function __init__()
     IBMQ_INSTANCE = get(ENV, "IBMQ_INSTANCE", "ibm-q/open/main")
 
     if !isnothing(IBMQ_API_TOKEN)
-        qiskit_ibm_runtime.QiskitRuntimeService.save_account(channel="ibm_quantum", instance = IBMQ_INSTANCE, token=IBMQ_API_TOKEN)
+        qiskit_ibm_runtime.QiskitRuntimeService.save_account(channel=pystr("ibm_quantum"), instance = pystr(IBMQ_INSTANCE), token=pystr(IBMQ_API_TOKEN))
     end
 end
 
