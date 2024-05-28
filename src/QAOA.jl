@@ -143,8 +143,12 @@ function retrieve(
         end
     end
 
-    session = qiskit_ibm_runtime.Session(service=service, backend=backend)
-    estimator = qiskit_ibm_runtime.EstimatorV2(session=session)
+    estimator = if is_local || ibm_backend == "ibmq_qasm_simulator"
+        qiskit_ibm_runtime.EstimatorV2(backend = backend)
+    else
+        session = qiskit_ibm_runtime.Session(service=service, backend=backend)
+        qiskit_ibm_runtime.EstimatorV2(session=session)
+    end
     if !is_local
         estimator.options.default_shots = num_reads
     end
