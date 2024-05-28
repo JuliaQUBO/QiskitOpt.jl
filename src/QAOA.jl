@@ -159,8 +159,6 @@ function retrieve(
         options = scipy_options
     )
 
-    println("Status: ", result.message)
-
     qc = ansatz.assign_parameters(result.x)
     qc.measure_all()
     optimized_qc = pass_manager.run(qc)
