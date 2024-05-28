@@ -47,7 +47,7 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
         "evals"  => Vector{Float64}(),
     )
 
-    retrieve(sampler) do result, sample_results, qp_offset
+    retrieve(sampler) do result, sample_results
         if MOI.get(sampler, MOI.ObjectiveSense()) == MOI.MAX_SENSE
             α = -α
         end
@@ -116,7 +116,6 @@ function retrieve(
 
     ising_qp = quadratic_program(sampler)
     ising_hamiltonian = ising_qp[0]
-    qp_offset = ising_qp[1]
     ansatz = ansatz_instance(num_qubits = num_qubits)
 
     # pass manager for the quantum circuit (optimize the circuit for the target device)
@@ -163,7 +162,7 @@ function retrieve(
     sampling_result = qiskit_sampler.run(pylist([optimized_qc])).result()[0]
     samples = sampling_result.data.meas.get_counts()
 
-    callback(result, samples, qp_offset)
+    callback(result, samples)
 
     return nothing
 end

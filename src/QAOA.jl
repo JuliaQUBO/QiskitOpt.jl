@@ -117,7 +117,8 @@ function retrieve(
         backend = qiskit_aer.AerSimulator.from_backend(backend)
     end
 
-    ising_hamiltonian = quadratic_program(sampler)
+    ising_qp = quadratic_program(sampler)
+    ising_hamiltonian = ising_qp[0]
     ansatz = qiskit.circuit.library.QAOAAnsatz(
         ising_hamiltonian,
         reps = num_layers
