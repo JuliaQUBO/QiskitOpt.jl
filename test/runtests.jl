@@ -1,4 +1,4 @@
-using QiskitOpt: QUBODrivers, VQE
+using QiskitOpt: QUBODrivers, VQE, QAOA
 
 QUBODrivers.test(QAOA.Optimizer) do model
 end
