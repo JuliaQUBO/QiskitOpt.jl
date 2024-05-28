@@ -47,7 +47,7 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
         "evals"  => Vector{Float64}(),
     )
 
-    retrieve(sampler) do result, sample_results
+    retrieve(sampler) do result, sample_results, qp_offset
 
         for key in sample_results.keys()
             state = reverse(parse.(Int,split(pyconvert.(String, key),"")))
@@ -55,7 +55,7 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
             # state:
             state,
             # energy:
-            α * (state'* (Q+Diagonal(L)) * state + β),
+            QUBOTools.value(state, L, Q, α, β),
             # reads:
             pyconvert(Int, sample_results[key])
             )   
@@ -111,7 +111,9 @@ function retrieve(
         _backend
     end
 
-    ising_hamiltonian = quadratic_program(sampler)
+    ising_qp = quadratic_program(sampler)
+    ising_hamiltonian = ising_qp[0]
+    qp_offset = ising_qp[1]
     ansatz = ansatz_instance(num_qubits = num_qubits)
 
     # pass manager for the quantum circuit (optimize the circuit for the target device)
@@ -160,7 +162,7 @@ function retrieve(
     sampling_result = qiskit_sampler.run(pylist([optimized_qc])).result()[0]
     samples = sampling_result.data.meas.get_counts()
 
-    callback(result, samples)
+    callback(result, samples, qp_offset)
 
     return nothing
 end

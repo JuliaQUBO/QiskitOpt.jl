@@ -40,11 +40,13 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     linear    = PythonCall.pydict()
     quadratic = PythonCall.pydict()
 
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+
     for i in 1:n
-        linear[string(i)] = L[i]
+        linear[string(i)] = L[i] * (sense == MOI.MIN_SENSE ? 1 : -1)
     end
     for i in 1:n, j in 1:n
-        quadratic[string(i), string(j)] = Q[i,j]
+        quadratic[string(i), string(j)] = Q[i,j] * (sense == MOI.MIN_SENSE ? 1 : -1)
     end
 
     qp = qiskit_optimization.QuadraticProgram()
@@ -54,8 +56,8 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     end
 
     qp.minimize(linear = linear, quadratic = quadratic)
-
-    return return qp.to_ising()[0]
+    
+    return qp.to_ising()
 end
 
 export  VQE, QAOA
