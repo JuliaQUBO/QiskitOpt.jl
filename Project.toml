@@ -1,7 +1,7 @@
 name = "QiskitOpt"
 uuid = "81b20daf-e62b-4502-a0d1-aa084de80e33"
 authors = ["pedromxavier <pedroxavier@psr-inc.com>", "pedroripper <pedroripper@psr-inc.com>"]
-version = "0.2.0"
+version = "0.3.0"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
