@@ -48,6 +48,9 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     )
 
     retrieve(sampler) do result, sample_results
+        if MOI.get(sampler, MOI.ObjectiveSense()) == MOI.MAX_SENSE
+            α = -α
+        end
 
         for key in sample_results.keys()
             state = reverse(parse.(Int,split(pyconvert.(String, key),"")))
