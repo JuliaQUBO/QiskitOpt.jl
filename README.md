@@ -41,6 +41,18 @@ for i = 1:result_count(model)
 end
 ```
 
+## Changing the backend and instance
+
+
+```julia
+MOI.set(model, VQE.IBMBackend(), "ibm_osaka") # or QAOA.IBMBackend
+MOI.set(model, VQE.Instance(), "my/instance") # or QAOA.Instance
+
+# Using a fake backend
+MOI.set(model, VQE.IBMFakeBackend(), QiskitOpt.qiskit_ibm_runtime.fake_provider.FakeAlgiers) # or QAOA.IBMFakeBackend
+
+```
+
 ## API Token
 To access IBM's Quantum Computers, it is necessary to create an account at [IBM Q](https://quantum-computing.ibm.com/) to obtain an API Token and run the following python code:
 
