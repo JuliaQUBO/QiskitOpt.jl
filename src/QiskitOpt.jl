@@ -1,50 +1,52 @@
 module QiskitOpt
 
 using PythonCall
-import QUBODrivers: MOI, QUBODrivers, QUBOTools
+using QUBO
+MOI = QUBODrivers.MOI
 
 # :: Python Qiskit Modules ::
-const qiskit                         = PythonCall.pynew()
-const qiskit_algorithms              = PythonCall.pynew()
-const qiskit_optimization            = PythonCall.pynew()
-const qiskit_optimization_algorithms = PythonCall.pynew()
-const qiskit_optimization_runtime    = PythonCall.pynew()
-const qiskit_utils                   = PythonCall.pynew()
+const qiskit              = PythonCall.pynew()
+const qiskit_optimization = PythonCall.pynew()
+const qiskit_ibm_runtime  = PythonCall.pynew()
+const qiskit_algorithms   = PythonCall.pynew()
+const qiskit_aer          = PythonCall.pynew()  
+const scipy               = PythonCall.pynew()
+const numpy               = PythonCall.pynew()
 
 function __init__()
     # Load Python Packages
     PythonCall.pycopy!(qiskit, pyimport("qiskit"))
-    PythonCall.pycopy!(qiskit_algorithms, pyimport("qiskit.algorithms"))
     PythonCall.pycopy!(qiskit_optimization, pyimport("qiskit_optimization"))
-    PythonCall.pycopy!(
-        qiskit_optimization_algorithms,
-        pyimport("qiskit_optimization.algorithms"),
-    )
-    PythonCall.pycopy!(qiskit_optimization_runtime, pyimport("qiskit_optimization.runtime"))
-    PythonCall.pycopy!(qiskit_utils, pyimport("qiskit.utils"))
+    PythonCall.pycopy!(qiskit_ibm_runtime, pyimport("qiskit_ibm_runtime"))
+    PythonCall.pycopy!(qiskit_algorithms, pyimport("qiskit_algorithms"))
+    PythonCall.pycopy!(qiskit_aer, pyimport("qiskit_aer"))
+    PythonCall.pycopy!(scipy, pyimport("scipy"))
+    PythonCall.pycopy!(numpy, pyimport("numpy"))
 
     # IBMQ Credentials
     IBMQ_API_TOKEN = get(ENV, "IBMQ_API_TOKEN", nothing)
+    IBMQ_INSTANCE = get(ENV, "IBMQ_INSTANCE", "ibm-q/open/main")
 
     if !isnothing(IBMQ_API_TOKEN)
-        qiskit.IBMQ.save_account(IBMQ_API_TOKEN)
+        qiskit_ibm_runtime.QiskitRuntimeService.save_account(channel=pystr("ibm_quantum"), instance = pystr(IBMQ_INSTANCE), token=pystr(IBMQ_API_TOKEN))
     end
 end
 
 function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     # Retrieve Model
-    Q, α, β = QUBODrivers.qubo(sampler, Dict)
+    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
 
     # Build Qiskit Model
     linear    = PythonCall.pydict()
     quadratic = PythonCall.pydict()
 
-    for ((i, j), q) in Q
-        if i == j
-            linear[string(i)] = q
-        else
-            quadratic[string(i), string(j)] = q
-        end
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+
+    for i in 1:n
+        linear[string(i)] = L[i] * (sense == MOI.MIN_SENSE ? 1 : -1)
+    end
+    for i in 1:n, j in 1:n
+        quadratic[string(i), string(j)] = Q[i,j] * (sense == MOI.MIN_SENSE ? 1 : -1)
     end
 
     qp = qiskit_optimization.QuadraticProgram()
@@ -54,11 +56,11 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     end
 
     qp.minimize(linear = linear, quadratic = quadratic)
-
-    return (qp, α, β)
+    
+    return qp.to_ising()
 end
 
-export QAOA, VQE
+export  VQE, QAOA
 
 include("QAOA.jl")
 include("VQE.jl")

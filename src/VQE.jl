@@ -1,90 +1,69 @@
 module VQE
 
-using Random
-using PythonCall: pyconvert
+using LinearAlgebra
+using PythonCall: pyconvert, pylist, pydict, pyint, pytuple, @pyexec
 using ..QiskitOpt:
     qiskit,
-    qiskit_optimization_algorithms,
+    qiskit_ibm_runtime,
     qiskit_algorithms,
-    qiskit_optimization_runtime,
-    quadratic_program
-import QUBODrivers:
-    MOI,
-    QUBODrivers,
-    QUBOTools,
-    Sample,
-    SampleSet,
-    @setup,
-    sample
+    qiskit_aer,
+    quadratic_program,
+    scipy,
+    numpy
 
-@setup Optimizer begin
+using QUBO
+MOI = QUBODrivers.MOI
+Sample = QUBODrivers.Sample
+SampleSet = QUBODrivers.SampleSet
+
+QUBODrivers.@setup Optimizer begin
     name    = "VQE @ IBMQ"
-    sense   = :min
-    domain  = :bool
-    version = v"0.4.0"
     attributes = begin
-        NumberOfReads["num_reads"]::Integer        = 1_000
-        NumberOfShots["num_shots"]::Integer        = 1_024
-        MaximumIterations["max_iter"]::Integer     = 50
-        NumberOfRepetitions["num_reps"]::Integer   = 1
-        RandomSeed["seed"]::Union{Integer,Nothing} = nothing
-        IBMBackend["ibm_backend"]::String          = "ibmq_qasm_simulator"
-        Entanglement["entanglement"]::String       = "linear"
+        MaximumIterations["max_iter"]::Integer     = 15
+        NumberOfReads["num_reads"]::Integer   = 100
+        InitialParameters["initial_parameters"]::Union{Vector{Float64}, Nothing} = nothing 
+        IBMFakeBackend["ibm_fake_backend"]         = qiskit_ibm_runtime.fake_provider.FakeAlgiers
+        IBMBackend["ibm_backend"]::Union{String, Nothing}          = nothing
+        IsLocal["is_local"]::Bool          = false
+        Channel["channel"]::String                 = "ibm_quantum"
+        Instance["instance"]::String               = "ibm-q/open/main"
+        Ansatz["ansatz"]                           = qiskit.circuit.library.EfficientSU2
     end
 end
 
-function sample(sampler::Optimizer{T}) where {T}
-    # Retrieve Attribute
-    seed        = MOI.get(sampler, VQE.RandomSeed())
-    num_reads   = MOI.get(sampler, VQE.NumberOfReads())
+function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
+    # Retrieve Model
+    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
     ibm_backend = MOI.get(sampler, VQE.IBMBackend())
 
-    # Instantiate Random Generator
-    rng = Random.Xoshiro(seed)
-
-    # Retrieve Model
-    qp, α, β = quadratic_program(sampler)
 
     # Results vector
-    samples = Vector{Sample{T,Int}}(undef, num_reads)
+    samples = QUBOTools.Sample{T,Int}[]
 
     # Extra Information 
     metadata = Dict{String,Any}(
         "origin" => "IBMQ VQE @ $(ibm_backend)",
-        "time"   => Dict{String,Any}(), 
+        "time"   => Dict{String,Any}(),
+        "evals"  => Vector{Float64}(),
     )
 
-    # Connect to IBMQ and get backend
-    connect(sampler) do client
-        vqe     = qiskit_optimization_algorithms.MinimumEigenOptimizer(client)
-        results = vqe.solve(qp)
+    retrieve(sampler) do result, sample_results
+        if MOI.get(sampler, MOI.ObjectiveSense()) == MOI.MAX_SENSE
+            α = -α
+        end
 
-        Ψ = Vector{Int}[]
-        ρ = Float64[]
-        Λ = T[]
-
-        for sample in results.samples
+        for key in sample_results.keys()
+            state = reverse(parse.(Int,split(pyconvert.(String, key),"")))
+            sample = QUBOTools.Sample{T,Int}(
             # state:
-            push!(Ψ, pyconvert.(Int, sample.x))
+            state,
+            # energy:
+            QUBOTools.value(state, L, Q, α, β),
             # reads:
-            push!(ρ, pyconvert(Float64, sample.probability))
-            # value: 
-            push!(Λ, α * (pyconvert(T, sample.fval) + β))
+            pyconvert(Int, sample_results[key])
+            )   
+            push!(samples, sample)
         end
-
-        P = cumsum(ρ)
-
-        for i = 1:num_reads
-            p = rand(rng)
-            j = first(searchsorted(P, p))
-
-            samples[i] = Sample{T}(Ψ[j], Λ[j])
-        end
-
-        metadata["time"]["effective"] = pyconvert(
-            Float64,
-            results.min_eigen_solver_result.optimizer_time
-        )
 
         return nothing
     end
@@ -92,43 +71,102 @@ function sample(sampler::Optimizer{T}) where {T}
     return SampleSet{T}(samples, metadata)
 end
 
-function connect(
+function retrieve(
     callback::Function,
-    sampler::Optimizer,
-)
+    sampler::Optimizer{T},
+) where {T}
     # Retrieve Attributes
-    num_shots    = MOI.get(sampler, VQE.NumberOfShots())
-    max_iter     = MOI.get(sampler, VQE.MaximumIterations())
-    num_reps     = MOI.get(sampler, VQE.NumberOfRepetitions())
-    num_qubits   = MOI.get(sampler, MOI.NumberOfVariables())
-    ibm_backend  = MOI.get(sampler, VQE.IBMBackend())
-    entanglement = MOI.get(sampler, VQE.Entanglement())
+    max_iter        = MOI.get(sampler, VQE.MaximumIterations())
+    num_reads        = MOI.get(sampler, VQE.NumberOfReads())
+    num_qubits      = MOI.get(sampler, MOI.NumberOfVariables())
+    ibm_backend     = MOI.get(sampler, VQE.IBMBackend())
+    ibm_fake_backend = MOI.get(sampler, VQE.IBMFakeBackend())
+    ansatz_instance = MOI.get(sampler, VQE.Ansatz())
+    channel         = MOI.get(sampler, VQE.Channel())
+    instance        = MOI.get(sampler, VQE.Instance())
+    initial_parameters   = MOI.get(sampler, VQE.InitialParameters())
+    is_local    = MOI.get(sampler, VQE.IsLocal())
 
-    # Load Credentials
-    qiskit.IBMQ.load_account()
+    @pyexec """
+    def cost_function(params, ansatz, hamiltonian, estimator):
+        pub = (ansatz, [hamiltonian], [params])
+        result = estimator.run(pubs=[pub]).result()
+        energy = result[0].data.evs[0]
+        return energy
+    """ => cost_function
 
-    # Connect to provider
-    provider = qiskit.IBMQ.get_provider()
-    backend  = provider.get_backend(ibm_backend)
-    SPSA     = qiskit_algorithms.optimizers.SPSA(maxiter = max_iter)
+    service = qiskit_ibm_runtime.QiskitRuntimeService(
+        channel  = channel,
+        instance = instance,
+    )   
 
-    # Setup Ansatz
-    ansatz = qiskit.circuit.library.EfficientSU2(
-        num_qubits   = num_qubits,
-        reps         = num_reps,
-        entanglement = entanglement,
+    backend = if !isnothing(ibm_backend)
+        _backend = service.get_backend(ibm_backend)
+        if is_local && ibm_backend != "ibmq_qasm_simulator"
+            qiskit_aer.AerSimulator.from_backend(_backend)
+        else
+            _backend
+        end
+    else
+        _backend = ibm_fake_backend()
+        is_local = true
+        ibm_backend = _backend.backend_name
+        _backend
+    end
+
+    ising_qp = quadratic_program(sampler)
+    ising_hamiltonian = ising_qp[0]
+    ansatz = ansatz_instance(num_qubits = num_qubits)
+
+    # pass manager for the quantum circuit (optimize the circuit for the target device)
+    pass_manager = qiskit.transpiler.preset_passmanagers.generate_preset_pass_manager(
+        target = backend.target,
+        optimization_level = 3
+        )
+    
+    
+    # Ansatz and Hamiltonian to ISA (Instruction Set Architecture)
+    ansatz_isa = pass_manager.run(ansatz)
+    ising_hamiltonian = ising_hamiltonian.apply_layout(layout = ansatz_isa.layout)
+
+
+    if isnothing(initial_parameters)
+        initial_parameters = numpy.empty([ansatz_isa.num_parameters])
+        for i in 1:pyconvert(Int, ansatz_isa.num_parameters)
+            initial_parameters[i-1] = numpy.random.rand()
+        end
+    end
+
+    estimator = if is_local || ibm_backend == "ibmq_qasm_simulator"
+        qiskit_ibm_runtime.EstimatorV2(backend = backend)
+    else
+        session = qiskit_ibm_runtime.Session(service=service, backend=backend)
+        qiskit_ibm_runtime.EstimatorV2(session=session)
+    end
+    if !is_local
+        estimator.options.default_shots = num_reads
+    end
+
+    println("Running VQE on $(ibm_backend)...")
+    scipy_options = pydict()
+    scipy_options["maxiter"] = max_iter
+    result = scipy.optimize.minimize(
+        cost_function,
+        initial_parameters,
+        args = (ansatz_isa, ising_hamiltonian, estimator),
+        method = "cobyla",
+        options = scipy_options
     )
 
-    # Setup VQE Client
-    client = qiskit_optimization_runtime.VQEClient(
-        provider  = provider,
-        backend   = backend,
-        ansatz    = ansatz,
-        optimizer = SPSA,
-        shots     = num_shots,
-    )
+    qc = ansatz.assign_parameters(result.x)
+    qc.measure_all()
+    optimized_qc = pass_manager.run(qc)
 
-    callback(client)
+    qiskit_sampler = qiskit.primitives.StatevectorSampler(default_shots = pyint(num_reads))
+    sampling_result = qiskit_sampler.run(pylist([optimized_qc])).result()[0]
+    samples = sampling_result.data.meas.get_counts()
+
+    callback(result, samples)
 
     return nothing
 end
