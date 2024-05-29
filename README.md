@@ -41,6 +41,22 @@ for i = 1:result_count(model)
 end
 ```
 
+## Updating optimization parameters
+
+```julia
+# Number of shots
+MOI.set(model, VQE.NumberOfReads(), 1000) # or QAOA.NumberOfReads 
+
+# Maximum optimizer iterations
+MOI.set(model, VQE.MaximumIterations(), 100) # or QAOA.MaximumIterations 
+
+# Ansatz
+MOI.set(model, VQE.Ansatz(), QiskitOpt.qiskit.circuit.library.EfficientSU2) # or QAOA.Ansatz 
+
+# Number of QAOA ansatz repetitions (for QAOA only)
+MOI.set(model, QAOA.NumberOfLayers(), 5)  
+```
+
 ## Changing the backend and instance
 
 
@@ -52,6 +68,8 @@ MOI.set(model, VQE.Instance(), "my/instance") # or QAOA.Instance
 MOI.set(model, VQE.IBMFakeBackend(), QiskitOpt.qiskit_ibm_runtime.fake_provider.FakeAlgiers) # or QAOA.IBMFakeBackend
 
 ```
+
+List of fake backends available: [Qiskit Documentation](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/fake_provider#fake-backends)
 
 ## API Token
 To access IBM's Quantum Computers, it is necessary to create an account at [IBM Q](https://quantum-computing.ibm.com/) to obtain an API Token and run the following python code:
