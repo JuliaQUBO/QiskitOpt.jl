@@ -8,7 +8,7 @@ IBM Qiskit Optimization Wrapper for JuMP
 ```julia
 julia> import Pkg
 
-julia> Pkg.add("QiskitOpt.jl")
+julia> Pkg.add("QiskitOpt")
 ```
 
 ## Basic Usage
@@ -82,7 +82,7 @@ QiskitRuntimeService.save_account(channel='ibm_quantum', token="YOUR_TOKEN_HERE"
 
 Another option is to set the `IBMQ_API_TOKEN` environment variable before loading `QiskitOpt.jl`:
 ```shell
-$ export IBQM_API_TOKEN=YOUR_TOKEN_HERE
+$ export IBMQ_API_TOKEN=YOUR_TOKEN_HERE
 
 $ julia
 
