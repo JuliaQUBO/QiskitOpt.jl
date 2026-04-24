@@ -90,6 +90,14 @@ List of fake backends available: [Qiskit Documentation](https://docs.quantum.ibm
 ## IBM Quantum Platform
 To run on a real IBM backend, set `IBMBackend()` explicitly and authenticate with the current IBM Quantum Platform flow. The package does not call `save_account()` on import and does not write credentials to disk for you.
 
+Execution mode is selected from the backend attributes:
+
+| Configuration | Behavior |
+| --- | --- |
+| No `IBMBackend()` | Use `IBMFakeBackend()` locally. No IBM credentials or runtime service are required. |
+| `IBMBackend()` and `IsLocal() == true` | Fetch the named IBM backend configuration, then run locally with `AerSimulator.from_backend(...)`. IBM credentials are required for backend lookup. |
+| `IBMBackend()` and `IsLocal() == false` | Submit `EstimatorV2` and `SamplerV2` jobs to the selected IBM backend. IBM credentials are required. |
+
 The supported environment variables are:
 
 - `QISKIT_IBM_TOKEN`
@@ -99,6 +107,8 @@ The supported environment variables are:
 Legacy `IBMQ_API_TOKEN` and `IBMQ_INSTANCE` names are still accepted as fallbacks, but they are no longer the documented primary path.
 
 If you do not call `set_attribute(model, QAOA.Channel(), ...)` or `set_attribute(model, VQE.Channel(), ...)`, the package will read `QISKIT_IBM_CHANNEL` and otherwise fall back to `ibm_quantum_platform`.
+
+IBM documents the current account construction in the [`QiskitRuntimeService` API reference](https://quantum.cloud.ibm.com/docs/en/api/qiskit-ibm-runtime/qiskit-runtime-service). The IBM docs describe the API key as the minimum required authentication input for non-local channels, but they recommend providing the instance or CRN as well to avoid account discovery and ambiguity. The local emulation behavior follows IBM's [Qiskit Runtime local testing mode](https://quantum.cloud.ibm.com/docs/en/guides/local-testing-mode).
 
 Example setup:
 
