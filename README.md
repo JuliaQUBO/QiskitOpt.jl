@@ -11,6 +11,16 @@ julia> import Pkg
 julia> Pkg.add("QiskitOpt")
 ```
 
+`Pkg.add("QiskitOpt")` installs the registered package from Julia's General registry. Use `QiskitOpt` as the package name; the `.jl` suffix only appears in the GitHub repository name.
+
+If you want a development checkout from source instead of the registered package, use:
+
+```julia
+julia> import Pkg
+
+julia> Pkg.develop(url="https://github.com/JuliaQUBO/QiskitOpt.jl")
+```
+
 ## Local Quickstart
 `QiskitOpt.jl` now defaults to credential-free local execution. If you do not pick a real IBM backend explicitly, both `QAOA.Optimizer` and `VQE.Optimizer` run against a fake backend through Qiskit Runtime's local testing mode.
 
