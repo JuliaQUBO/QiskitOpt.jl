@@ -16,17 +16,70 @@ const FIXED_VARIABLE_Q = [
     1 0 2 -1
 ]
 
+# Mirrors the 36-variable shape from issue #8 without vendoring external CSV data.
+const LARGE_LOCAL_Q = let Q = zeros(36, 36)
+    for i in 1:35
+        Q[i, i + 1] = isodd(i) ? -3.0 : 2.0
+    end
+    for i in 1:6:30
+        Q[i, i + 5] = -1.5
+    end
+    Q
+end
+
+const LARGE_LOCAL_L = [
+    39.7483,
+    -42.7194,
+    -42.7084,
+    -85.3741,
+    85.4966,
+    -42.7483,
+    175.9522,
+    85.4966,
+    48.9413,
+    52.4653,
+    -210.3895,
+    91.6596,
+    85.4966,
+    86.2356,
+    86.3366,
+    86.7676,
+    6.99,
+    172.3262,
+    0.0,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -42.7483,
+    -128.2449,
+    -128.2449,
+    128.2449,
+    128.2449,
+    128.2449,
+    42.7483,
+    42.7483,
+    42.7483,
+]
+
 struct MockRuntimeService
     backend::Function
 end
 
-function build_model(optimizer_factory; Q=TEST_Q, sense=:Min)
+function build_model(optimizer_factory; Q=TEST_Q, L=nothing, scale=1.0, offset=0.0, sense=:Min)
     model = Model(optimizer_factory)
     num_variables = size(Q, 1)
+    linear_coefficients = isnothing(L) ? zeros(num_variables) : L
 
     @variable(model, x[1:num_variables], Bin)
 
-    objective = sum(Q[i, j] * x[i] * x[j] for i in 1:num_variables, j in 1:num_variables)
+    quadratic = sum(Q[i, j] * x[i] * x[j] for i in 1:num_variables, j in 1:num_variables)
+    linear = sum(linear_coefficients[i] * x[i] for i in 1:num_variables)
+    objective = scale * (quadratic + linear + offset)
     if sense == :Min
         @objective(model, Min, objective)
     else
@@ -36,12 +89,18 @@ function build_model(optimizer_factory; Q=TEST_Q, sense=:Min)
     return model, x
 end
 
-function assert_solution_consistency(model, x; Q=TEST_Q)
+function assert_solution_consistency(model, x; Q=TEST_Q, L=nothing, scale=1.0, offset=0.0)
     @test result_count(model) >= 1
 
     for result in 1:result_count(model)
         assignment = round.(Int, value.(x; result=result))
-        expected_objective = assignment' * Q * assignment
+        linear_coefficients = isnothing(L) ? zeros(length(assignment)) : L
+        expected_objective =
+            scale * (
+                assignment' * Q * assignment +
+                sum(linear_coefficients[i] * assignment[i] for i in eachindex(assignment)) +
+                offset
+            )
         observed_objective = objective_value(model; result=result)
 
         @test isapprox(observed_objective, expected_objective; atol=1.0e-6)
@@ -57,8 +116,13 @@ function solve_locally_without_runtime_service(
     optimizer_factory,
     optimizer_module;
     Q=TEST_Q,
+    L=nothing,
+    scale=1.0,
+    offset=0.0,
     sense=:Min,
     fixed_variables=Pair{Int,Int}[],
+    max_iterations=5,
+    number_of_reads=64,
 )
     withenv(
         "QISKIT_IBM_TOKEN" => nothing,
@@ -73,14 +137,26 @@ function solve_locally_without_runtime_service(
         )
 
         try
-            model, x = build_model(optimizer_factory; Q=Q, sense=sense)
+            model, x = build_model(
+                optimizer_factory;
+                Q=Q,
+                L=L,
+                scale=scale,
+                offset=offset,
+                sense=sense,
+            )
             for (index, value) in fixed_variables
                 fix(x[index], value; force=true)
             end
-            configure_solver!(model, optimizer_module)
+            configure_solver!(
+                model,
+                optimizer_module;
+                max_iterations=max_iterations,
+                number_of_reads=number_of_reads,
+            )
 
             optimize!(model)
-            assert_solution_consistency(model, x; Q=Q)
+            assert_solution_consistency(model, x; Q=Q, L=L, scale=scale, offset=offset)
         finally
             QiskitOpt._runtime_service_builder[] = previous_builder
         end
@@ -175,6 +251,27 @@ end
         VQE;
         Q=FIXED_VARIABLE_Q,
         fixed_variables=[4 => 1],
+    )
+end
+
+@testset "Default local backend handles large QUBOs" begin
+    solve_locally_without_runtime_service(
+        QAOA.Optimizer,
+        QAOA;
+        Q=LARGE_LOCAL_Q,
+        L=LARGE_LOCAL_L,
+        offset=601.4762,
+        max_iterations=1,
+        number_of_reads=8,
+    )
+    solve_locally_without_runtime_service(
+        VQE.Optimizer,
+        VQE;
+        Q=LARGE_LOCAL_Q,
+        L=LARGE_LOCAL_L,
+        offset=601.4762,
+        max_iterations=1,
+        number_of_reads=8,
     )
 end
 

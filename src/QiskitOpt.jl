@@ -111,6 +111,10 @@ function runtime_service(;
     )
 end
 
+function default_local_backend()
+    return qiskit_aer.AerSimulator(method="matrix_product_state")
+end
+
 function backend_name(backend)
     try
         return PythonCall.pyconvert(String, backend.name)

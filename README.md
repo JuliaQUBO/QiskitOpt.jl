@@ -22,7 +22,7 @@ julia> Pkg.develop(url="https://github.com/JuliaQUBO/QiskitOpt.jl")
 ```
 
 ## Local Quickstart
-`QiskitOpt.jl` now defaults to credential-free local execution. If you do not pick a real IBM backend explicitly, both `QAOA.Optimizer` and `VQE.Optimizer` run against a fake backend through Qiskit Runtime's local testing mode.
+`QiskitOpt.jl` now defaults to credential-free local execution. If you do not pick a real IBM backend explicitly, both `QAOA.Optimizer` and `VQE.Optimizer` run locally with Aer using the matrix-product-state simulator.
 
 ```julia
 using JuMP
@@ -43,7 +43,7 @@ Q = [
 @variable(model, x[1:3], Bin)
 @objective(model, Min, x' * Q * x)
 
-# No IBM token is required for local fake-backend execution.
+# No IBM token is required for default local Aer execution.
 optimize!(model)
 
 for i = 1:result_count(model)
@@ -73,7 +73,7 @@ set_attribute(model, QAOA.NumberOfLayers(), 5)
 ## Choosing a Local Backend
 
 ```julia
-# Use a different fake backend for local testing
+# Use a fake IBM backend for local testing
 set_attribute(
     model,
     VQE.IBMFakeBackend(),
@@ -94,7 +94,7 @@ Execution mode is selected from the backend attributes:
 
 | Configuration | Behavior |
 | --- | --- |
-| No `IBMBackend()` | Use `IBMFakeBackend()` locally. No IBM credentials or runtime service are required. |
+| No `IBMBackend()` | Use the configured local backend, which defaults to `AerSimulator(method="matrix_product_state")`. No IBM credentials or runtime service are required. |
 | `IBMBackend()` and `IsLocal() == true` | Fetch the named IBM backend configuration, then run locally with `AerSimulator.from_backend(...)`. IBM credentials are required for backend lookup. |
 | `IBMBackend()` and `IsLocal() == false` | Submit `EstimatorV2` and `SamplerV2` jobs to the selected IBM backend. IBM credentials are required. |
 

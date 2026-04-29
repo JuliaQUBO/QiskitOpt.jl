@@ -3,6 +3,7 @@ module VQE
 using PythonCall: pyconvert, pylist, pydict, pyint, @pyexec
 using ..QiskitOpt:
     backend_name,
+    default_local_backend,
     empty_metadata,
     qiskit,
     qiskit_ibm_runtime,
@@ -26,7 +27,7 @@ QUBODrivers.@setup Optimizer begin
         MaximumIterations["max_iter"]::Integer     = 15
         NumberOfReads["num_reads"]::Integer        = 100
         InitialParameters["initial_parameters"]::Union{Vector{Float64}, Nothing} = nothing 
-        IBMFakeBackend["ibm_fake_backend"]         = qiskit_ibm_runtime.fake_provider.FakeManilaV2
+        IBMFakeBackend["ibm_fake_backend"]         = default_local_backend
         IBMBackend["ibm_backend"]::Union{String, Nothing} = nothing
         IsLocal["is_local"]::Bool                  = false
         Channel["channel"]::Union{String, Nothing} = nothing
