@@ -13,6 +13,12 @@ julia> Pkg.add("QiskitOpt")
 
 `Pkg.add("QiskitOpt")` installs the registered package from Julia's General registry. Use `QiskitOpt` as the package name; the `.jl` suffix only appears in the GitHub repository name.
 
+`QiskitOpt` provides MOI-compatible optimizers and does not depend on JuMP directly. Install JuMP separately if you want to run the examples below:
+
+```julia
+julia> Pkg.add("JuMP")
+```
+
 If you want a development checkout from source instead of the registered package, use:
 
 ```julia
@@ -109,6 +115,15 @@ Legacy `IBMQ_API_TOKEN` and `IBMQ_INSTANCE` names are still accepted as fallback
 If you do not call `set_attribute(model, QAOA.Channel(), ...)` or `set_attribute(model, VQE.Channel(), ...)`, the package will read `QISKIT_IBM_CHANNEL` and otherwise fall back to `ibm_quantum_platform`.
 
 IBM documents the current account construction in the [`QiskitRuntimeService` API reference](https://quantum.cloud.ibm.com/docs/en/api/qiskit-ibm-runtime/qiskit-runtime-service). The IBM docs describe the API key as the minimum required authentication input for non-local channels, but they recommend providing the instance or CRN as well to avoid account discovery and ambiguity. The local emulation behavior follows IBM's [Qiskit Runtime local testing mode](https://quantum.cloud.ibm.com/docs/en/guides/local-testing-mode).
+
+For the non-blocking GitHub Actions hardware smoke workflow, configure these repository settings under `Settings` -> `Secrets and variables` -> `Actions`:
+
+- Secret `QISKIT_IBM_TOKEN`: IBM Quantum Platform API key.
+- Secret `QISKIT_IBM_INSTANCE`: IBM Cloud CRN or runtime instance.
+- Variable `QISKIT_IBM_BACKEND`: backend name, for example `ibm_fez`.
+- Variable `QISKIT_IBM_CHANNEL`: optional, defaults to `ibm_quantum_platform` when omitted.
+
+After those values are set, run the `IBM Hardware Smoke` workflow manually from the `Actions` tab, or let the scheduled monthly run exercise it.
 
 Example setup:
 

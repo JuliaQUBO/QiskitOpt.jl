@@ -1,7 +1,8 @@
-using JuMP
 using Test
 using QiskitOpt
 using QiskitOpt: QAOA, QUBODrivers, VQE
+
+MOI = QUBODrivers.MOI
 
 const TEST_Q = [
     -1 2 2
@@ -71,29 +72,42 @@ struct MockRuntimeService
 end
 
 function build_model(optimizer_factory; Q=TEST_Q, L=nothing, scale=1.0, offset=0.0, sense=:Min)
-    model = Model(optimizer_factory)
+    model = MOI.instantiate(optimizer_factory; with_cache_type=Float64)
     num_variables = size(Q, 1)
     linear_coefficients = isnothing(L) ? zeros(num_variables) : L
 
-    @variable(model, x[1:num_variables], Bin)
-
-    quadratic = sum(Q[i, j] * x[i] * x[j] for i in 1:num_variables, j in 1:num_variables)
-    linear = sum(linear_coefficients[i] * x[i] for i in 1:num_variables)
-    objective = scale * (quadratic + linear + offset)
-    if sense == :Min
-        @objective(model, Min, objective)
-    else
-        @objective(model, Max, objective)
+    x = MOI.add_variables(model, num_variables)
+    for variable in x
+        MOI.add_constraint(model, variable, MOI.ZeroOne())
     end
+
+    quadratic_terms = MOI.ScalarQuadraticTerm{Float64}[]
+    for i in 1:num_variables, j in 1:num_variables
+        iszero(Q[i, j]) && continue
+        coefficient = (i == j ? 2 : 1) * scale * Q[i, j]
+        push!(quadratic_terms, MOI.ScalarQuadraticTerm(coefficient, x[i], x[j]))
+    end
+
+    linear_terms = MOI.ScalarAffineTerm{Float64}[]
+    for i in 1:num_variables
+        iszero(linear_coefficients[i]) && continue
+        push!(linear_terms, MOI.ScalarAffineTerm(scale * linear_coefficients[i], x[i]))
+    end
+
+    objective = MOI.ScalarQuadraticFunction(quadratic_terms, linear_terms, scale * offset)
+    objective_sense = sense == :Min ? MOI.MIN_SENSE : MOI.MAX_SENSE
+    MOI.set(model, MOI.ObjectiveSense(), objective_sense)
+    MOI.set(model, MOI.ObjectiveFunction{typeof(objective)}(), objective)
 
     return model, x
 end
 
 function assert_solution_consistency(model, x; Q=TEST_Q, L=nothing, scale=1.0, offset=0.0)
-    @test result_count(model) >= 1
+    result_count = MOI.get(model, MOI.ResultCount())
+    @test result_count >= 1
 
-    for result in 1:result_count(model)
-        assignment = round.(Int, value.(x; result=result))
+    for result in 1:result_count
+        assignment = round.(Int, MOI.get.(model, MOI.VariablePrimal(result), x))
         linear_coefficients = isnothing(L) ? zeros(length(assignment)) : L
         expected_objective =
             scale * (
@@ -101,15 +115,15 @@ function assert_solution_consistency(model, x; Q=TEST_Q, L=nothing, scale=1.0, o
                 sum(linear_coefficients[i] * assignment[i] for i in eachindex(assignment)) +
                 offset
             )
-        observed_objective = objective_value(model; result=result)
+        observed_objective = MOI.get(model, MOI.ObjectiveValue(result))
 
         @test isapprox(observed_objective, expected_objective; atol=1.0e-6)
     end
 end
 
 function configure_solver!(model, optimizer_module; max_iterations=5, number_of_reads=64)
-    set_attribute(model, optimizer_module.MaximumIterations(), max_iterations)
-    set_attribute(model, optimizer_module.NumberOfReads(), number_of_reads)
+    MOI.set(model, optimizer_module.MaximumIterations(), max_iterations)
+    MOI.set(model, optimizer_module.NumberOfReads(), number_of_reads)
 end
 
 function solve_locally_without_runtime_service(
@@ -146,7 +160,7 @@ function solve_locally_without_runtime_service(
                 sense=sense,
             )
             for (index, value) in fixed_variables
-                fix(x[index], value; force=true)
+                MOI.add_constraint(model, x[index], MOI.EqualTo(Float64(value)))
             end
             configure_solver!(
                 model,
@@ -155,7 +169,7 @@ function solve_locally_without_runtime_service(
                 number_of_reads=number_of_reads,
             )
 
-            optimize!(model)
+            MOI.optimize!(model)
             assert_solution_consistency(model, x; Q=Q, L=L, scale=scale, offset=offset)
         finally
             QiskitOpt._runtime_service_builder[] = previous_builder
@@ -165,8 +179,8 @@ end
 
 function run_qubodrivers_suite(optimizer_module)
     QUBODrivers.test(optimizer_module.Optimizer) do model
-        QUBODrivers.MOI.set(model, optimizer_module.MaximumIterations(), 5)
-        QUBODrivers.MOI.set(model, optimizer_module.NumberOfReads(), 64)
+        MOI.set(model, optimizer_module.MaximumIterations(), 5)
+        MOI.set(model, optimizer_module.NumberOfReads(), 64)
     end
 end
 
@@ -201,10 +215,10 @@ end
 
     try
         model, _ = build_model(QAOA.Optimizer)
-        set_attribute(model, QAOA.IBMBackend(), "ibm_fez")
-        set_attribute(model, QAOA.MaximumIterations(), 1)
+        MOI.set(model, QAOA.IBMBackend(), "ibm_fez")
+        MOI.set(model, QAOA.MaximumIterations(), 1)
 
-        @test_throws ErrorException optimize!(model)
+        @test_throws ErrorException MOI.optimize!(model)
     finally
         QiskitOpt._runtime_service_builder[] = previous_builder
     end
@@ -225,12 +239,12 @@ end
 
         try
             model, x = build_model(VQE.Optimizer)
-            set_attribute(model, VQE.IBMBackend(), "ibm_fez")
-            set_attribute(model, VQE.IsLocal(), true)
-            set_attribute(model, VQE.MaximumIterations(), 2)
-            set_attribute(model, VQE.NumberOfReads(), 32)
+            MOI.set(model, VQE.IBMBackend(), "ibm_fez")
+            MOI.set(model, VQE.IsLocal(), true)
+            MOI.set(model, VQE.MaximumIterations(), 2)
+            MOI.set(model, VQE.NumberOfReads(), 32)
 
-            optimize!(model)
+            MOI.optimize!(model)
             assert_solution_consistency(model, x)
 
             @test length(runtime_calls) == 1
