@@ -1,0 +1,70 @@
+name: IBM Hardware Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 10 1 * *"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      QISKIT_IBM_TOKEN: ${{ secrets.QISKIT_IBM_TOKEN }}
+      QISKIT_IBM_INSTANCE: ${{ secrets.QISKIT_IBM_INSTANCE }}
+      QISKIT_IBM_CHANNEL: ${{ vars.QISKIT_IBM_CHANNEL }}
+      QISKIT_IBM_BACKEND: ${{ vars.QISKIT_IBM_BACKEND }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.11"
+      - name: Check IBM runtime configuration
+        id: config
+        shell: bash
+        run: |
+          if [ -z "${QISKIT_IBM_TOKEN}" ] || [ -z "${QISKIT_IBM_INSTANCE}" ] || [ -z "${QISKIT_IBM_BACKEND}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - uses: julia-actions/julia-buildpkg@v1
+        if: steps.config.outputs.ready == 'true'
+      - name: Run QAOA smoke test on IBM hardware
+        if: steps.config.outputs.ready == 'true'
+        run: |
+          julia --project=. -e '
+          using QiskitOpt
+          using QiskitOpt: QAOA, QUBODrivers
+
+          MOI = QUBODrivers.MOI
+          model = MOI.instantiate(QAOA.Optimizer; with_cache_type=Float64)
+          x = MOI.add_variables(model, 3)
+          for variable in x
+              MOI.add_constraint(model, variable, MOI.ZeroOne())
+          end
+
+          quadratic_terms = [
+              MOI.ScalarQuadraticTerm(-2.0, x[1], x[2]),
+              MOI.ScalarQuadraticTerm(-2.0, x[2], x[3]),
+          ]
+          linear_terms = [
+              MOI.ScalarAffineTerm(1.0, x[1]),
+              MOI.ScalarAffineTerm(1.0, x[2]),
+              MOI.ScalarAffineTerm(1.0, x[3]),
+          ]
+          objective = MOI.ScalarQuadraticFunction(quadratic_terms, linear_terms, 0.0)
+          MOI.set(model, MOI.ObjectiveSense(), MOI.MIN_SENSE)
+          MOI.set(model, MOI.ObjectiveFunction{typeof(objective)}(), objective)
+
+          MOI.set(model, QAOA.MaximumIterations(), 1)
+          MOI.set(model, QAOA.NumberOfReads(), 32)
+          MOI.set(model, QAOA.IBMBackend(), ENV["QISKIT_IBM_BACKEND"])
+
+          MOI.optimize!(model)
+          @assert MOI.get(model, MOI.ResultCount()) >= 1
+          '
+      - name: Skip when IBM configuration is unavailable
+        if: steps.config.outputs.ready != 'true'
+        run: echo "Skipping IBM hardware smoke test because credentials or backend configuration are not set."
