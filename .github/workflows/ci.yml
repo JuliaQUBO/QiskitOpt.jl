@@ -15,9 +15,9 @@ jobs:
         include:
           - version: '1.10'
             os: ubuntu-latest
-          - version: '1.11'
+          - version: '1'
             os: ubuntu-latest
-          - version: '1.11'
+          - version: '1'
             os: windows-latest
     steps:
       - uses: actions/checkout@v4
