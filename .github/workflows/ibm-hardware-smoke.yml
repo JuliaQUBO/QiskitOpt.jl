@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
-          version: "1.11"
+          version: "1"
       - name: Check IBM runtime configuration
         id: config
         shell: bash
