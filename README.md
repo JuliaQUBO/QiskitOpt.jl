@@ -72,6 +72,7 @@ diagnostics.ok
 
 Julia reserves `local` as syntax, so the Julia-callable keyword is `local_backend`.
 With `ibm=false`, diagnostics do not import `qiskit_ibm_runtime`. Set `ibm=true` when you want IBM Runtime availability reported separately.
+The local backend check verifies the default Aer backend. Current QAOA/VQE local solves still use `qiskit_ibm_runtime` `EstimatorV2` and `SamplerV2` primitives, so run with `ibm=true` when you want a full solver-readiness check.
 
 ## Updating optimization parameters
 

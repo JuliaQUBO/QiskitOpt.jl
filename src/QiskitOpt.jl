@@ -116,6 +116,8 @@ const qiskit_aer          = LazyPythonModule("qiskit_aer", "qiskit-aer")
 const scipy               = LazyPythonModule("scipy", "scipy")
 const numpy               = LazyPythonModule("numpy", "numpy")
 const _runtime_service_builder = Ref{Function}()
+const _LOCAL_SOLVER_PRIMITIVES_NOTE =
+    "QAOA/VQE local solves still use qiskit_ibm_runtime EstimatorV2/SamplerV2; pass ibm=true to verify those primitives."
 
 function __init__()
     foreach(
@@ -199,7 +201,7 @@ function _diagnose_local_backend()
         return RuntimeDiagnostic(
             name="default_local_backend",
             ok=true,
-            message="Usable backend: $(backend_name(backend))",
+            message="Usable backend: $(backend_name(backend)). $(_LOCAL_SOLVER_PRIMITIVES_NOTE)",
         )
     catch err
         return RuntimeDiagnostic(
@@ -256,7 +258,6 @@ function check_runtime(; local_backend::Bool=true, ibm::Bool=false, verbose::Boo
 
     ibm_runtime = if ibm
         diagnostic = _diagnose_python_module(qiskit_ibm_runtime)
-        packages[diagnostic.name] = diagnostic
         diagnostic
     else
         nothing
@@ -266,6 +267,9 @@ function check_runtime(; local_backend::Bool=true, ibm::Bool=false, verbose::Boo
 
     diagnostics = RuntimeDiagnostic[julia, pythoncall]
     append!(diagnostics, values(packages))
+    if !isnothing(ibm_runtime)
+        push!(diagnostics, ibm_runtime)
+    end
     if !isnothing(local_backend_diagnostic)
         push!(diagnostics, local_backend_diagnostic)
     end

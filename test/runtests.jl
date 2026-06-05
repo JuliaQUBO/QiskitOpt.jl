@@ -202,6 +202,7 @@ end
     @test !haskey(local_diagnostics.packages, "qiskit_ibm_runtime")
     @test !isnothing(local_diagnostics.local_backend)
     @test local_diagnostics.local_backend.ok
+    @test occursin("qiskit_ibm_runtime", local_diagnostics.local_backend.message)
     @test !python_module_loaded("qiskit_ibm_runtime")
 
     missing_error = try
@@ -230,8 +231,9 @@ end
 
     ibm_diagnostics = QiskitOpt.check_runtime(; local_backend=false, ibm=true, verbose=false)
     @test !isnothing(ibm_diagnostics.ibm_runtime)
-    @test haskey(ibm_diagnostics.packages, "qiskit_ibm_runtime")
+    @test !haskey(ibm_diagnostics.packages, "qiskit_ibm_runtime")
     @test ibm_diagnostics.ibm_runtime.ok
+    @test ibm_diagnostics.ok
 end
 
 @testset "Local-first execution" begin
