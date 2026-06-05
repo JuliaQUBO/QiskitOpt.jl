@@ -309,12 +309,27 @@ end
         "local";
         backend_config=custom_config,
         backend_config_source="aer_attributes",
+        seed_transpiler=5678,
     )
     @test metadata["backend_configuration"]["source"] == "aer_attributes"
     @test metadata["backend_configuration"]["method"] == "statevector"
     @test metadata["backend_configuration"]["precision"] == "single"
     @test metadata["seeds"]["simulator"] == 1234
     @test metadata["seeds"]["transpiler"] == 5678
+
+    opaque_metadata = QiskitOpt.empty_metadata(
+        "QAOA",
+        "custom_backend",
+        "local";
+        backend_config_source="user_backend_factory",
+        seed_transpiler=5678,
+    )
+    @test opaque_metadata["backend_configuration"] == Dict{String,Any}(
+        "source" => "user_backend_factory",
+    )
+    @test !haskey(opaque_metadata["backend_configuration"], "method")
+    @test opaque_metadata["seeds"]["simulator"] === nothing
+    @test opaque_metadata["seeds"]["transpiler"] == 5678
 
     factory = QiskitOpt.local_aer_backend_factory(custom_config)
     @test factory.config.seed_simulator == 1234
@@ -323,6 +338,7 @@ end
     sentinel_backend = Ref(:backend)
     selected = QiskitOpt.configured_local_backend(() -> sentinel_backend[], default_config)
     @test selected.backend === :backend
+    @test selected.config === nothing
     @test selected.source == "user_backend_factory"
 end
 

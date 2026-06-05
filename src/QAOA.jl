@@ -169,6 +169,7 @@ function retrieve(
         execution_mode;
         backend_config=backend_selection.config,
         backend_config_source=backend_selection.source,
+        seed_transpiler=aer_config.seed_transpiler,
     )
 end
 

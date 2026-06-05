@@ -120,6 +120,7 @@ set_attribute(
 ```
 
 You can still provide any zero-argument function that returns a Qiskit backend through `IBMFakeBackend()`.
+When `IBMFakeBackend()` is set to an explicit factory, that factory is used as-is and the Aer backend-construction attributes above do not modify it. Use `local_aer_backend_factory(...)` when you want QiskitOpt to retain the factory's Aer configuration in result metadata.
 
 ## Choosing a Local Backend
 

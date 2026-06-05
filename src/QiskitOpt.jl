@@ -479,7 +479,7 @@ function configured_local_backend(local_backend_factory, config::AerBackendConfi
 
     return (
         backend = local_backend_factory(),
-        config = config,
+        config = nothing,
         source = "user_backend_factory",
     )
 end
@@ -515,7 +515,7 @@ function configured_execution_backend(;
     return (
         backend = remote_backend,
         execution_mode = "cloud",
-        config = aer_config,
+        config = nothing,
         source = "cloud_backend",
     )
 end
@@ -561,10 +561,13 @@ function aer_backend_metadata(config::AerBackendConfig, source::AbstractString)
     )
 end
 
-function seed_metadata(config::AerBackendConfig)
+function seed_metadata(;
+    seed_simulator = nothing,
+    seed_transpiler = nothing,
+)
     return Dict{String,Any}(
-        "simulator" => config.seed_simulator,
-        "transpiler" => config.seed_transpiler,
+        "simulator" => seed_simulator,
+        "transpiler" => seed_transpiler,
     )
 end
 
@@ -574,6 +577,7 @@ function empty_metadata(
     execution_mode::AbstractString;
     backend_config::Union{AerBackendConfig,Nothing} = nothing,
     backend_config_source::Union{AbstractString,Nothing} = nothing,
+    seed_transpiler = nothing,
 )
     metadata = Dict{String,Any}(
         "origin" => "$(algorithm) @ $(backend)",
@@ -583,10 +587,21 @@ function empty_metadata(
         "evals" => Float64[],
     )
 
-    if !isnothing(backend_config)
+    if !isnothing(backend_config) || !isnothing(backend_config_source)
         source = isnothing(backend_config_source) ? "unknown" : backend_config_source
-        metadata["backend_configuration"] = aer_backend_metadata(backend_config, source)
-        metadata["seeds"] = seed_metadata(backend_config)
+        metadata["backend_configuration"] = if isnothing(backend_config)
+            Dict{String,Any}("source" => String(source))
+        else
+            aer_backend_metadata(backend_config, source)
+        end
+    end
+
+    if !isnothing(backend_config) || !isnothing(seed_transpiler)
+        seed_simulator = isnothing(backend_config) ? nothing : backend_config.seed_simulator
+        metadata["seeds"] = seed_metadata(
+            seed_simulator=seed_simulator,
+            seed_transpiler=seed_transpiler,
+        )
     end
 
     return metadata
