@@ -116,8 +116,53 @@ const qiskit_aer          = LazyPythonModule("qiskit_aer", "qiskit-aer")
 const scipy               = LazyPythonModule("scipy", "scipy")
 const numpy               = LazyPythonModule("numpy", "numpy")
 const _runtime_service_builder = Ref{Function}()
+const DEFAULT_AER_BACKEND_METHOD = "matrix_product_state"
 const _LOCAL_SOLVER_PRIMITIVES_NOTE =
     "QAOA/VQE local solves still use qiskit_ibm_runtime EstimatorV2/SamplerV2; pass ibm=true to verify those primitives."
+
+struct AerBackendConfig
+    method::Union{String,Nothing}
+    precision::Union{String,Nothing}
+    max_parallel_threads::Union{Integer,Nothing}
+    mps_omp_threads::Union{Integer,Nothing}
+    mps_truncation_threshold::Union{Real,Nothing}
+    mps_max_bond_dimension::Union{Integer,Nothing}
+    mps_sample_measure_algorithm::Union{String,Nothing}
+    seed_simulator::Union{Integer,Nothing}
+    seed_transpiler::Union{Integer,Nothing}
+end
+
+function AerBackendConfig(;
+    method::Union{AbstractString,Nothing} = DEFAULT_AER_BACKEND_METHOD,
+    precision::Union{AbstractString,Nothing} = nothing,
+    max_parallel_threads::Union{Integer,Nothing} = nothing,
+    mps_omp_threads::Union{Integer,Nothing} = nothing,
+    mps_truncation_threshold::Union{Real,Nothing} = nothing,
+    mps_max_bond_dimension::Union{Integer,Nothing} = nothing,
+    mps_sample_measure_algorithm::Union{AbstractString,Nothing} = nothing,
+    seed_simulator::Union{Integer,Nothing} = nothing,
+    seed_transpiler::Union{Integer,Nothing} = nothing,
+)
+    return AerBackendConfig(
+        nonempty_or_nothing(method),
+        nonempty_or_nothing(precision),
+        max_parallel_threads,
+        mps_omp_threads,
+        mps_truncation_threshold,
+        mps_max_bond_dimension,
+        nonempty_or_nothing(mps_sample_measure_algorithm),
+        seed_simulator,
+        seed_transpiler,
+    )
+end
+
+struct AerBackendFactory
+    config::AerBackendConfig
+end
+
+function (factory::AerBackendFactory)()
+    return local_aer_backend(factory.config)
+end
 
 function __init__()
     foreach(
@@ -373,8 +418,121 @@ function runtime_service(;
     )
 end
 
-function default_local_backend()
-    return qiskit_aer().AerSimulator(method="matrix_product_state")
+function _push_option!(options::Vector{Pair{Symbol,Any}}, name::Symbol, value)
+    isnothing(value) || push!(options, name => value)
+    return options
+end
+
+function aer_backend_options(config::AerBackendConfig)
+    options = Pair{Symbol,Any}[]
+    _push_option!(options, :method, config.method)
+    _push_option!(options, :precision, config.precision)
+    _push_option!(options, :max_parallel_threads, config.max_parallel_threads)
+    _push_option!(options, :mps_omp_threads, config.mps_omp_threads)
+    _push_option!(options, :mps_truncation_threshold, config.mps_truncation_threshold)
+    _push_option!(options, :mps_max_bond_dimension, config.mps_max_bond_dimension)
+    _push_option!(options, :mps_sample_measure_algorithm, config.mps_sample_measure_algorithm)
+    _push_option!(options, :seed_simulator, config.seed_simulator)
+
+    names = Tuple(first.(options))
+    values = Tuple(last.(options))
+    return NamedTuple{names}(values)
+end
+
+function local_aer_backend(config::AerBackendConfig = AerBackendConfig())
+    return qiskit_aer().AerSimulator(; aer_backend_options(config)...)
+end
+
+function default_local_backend(; kwargs...)
+    return local_aer_backend(AerBackendConfig(; kwargs...))
+end
+
+function local_aer_backend_factory(config::AerBackendConfig)
+    return AerBackendFactory(config)
+end
+
+function local_aer_backend_factory(; kwargs...)
+    return local_aer_backend_factory(AerBackendConfig(; kwargs...))
+end
+
+function local_aer_backend_from_backend(remote_backend, config::AerBackendConfig)
+    return qiskit_aer().AerSimulator.from_backend(
+        remote_backend;
+        aer_backend_options(config)...,
+    )
+end
+
+function configured_local_backend(local_backend_factory, config::AerBackendConfig)
+    if local_backend_factory === default_local_backend
+        return (
+            backend = local_aer_backend(config),
+            config = config,
+            source = "aer_attributes",
+        )
+    elseif local_backend_factory isa AerBackendFactory
+        return (
+            backend = local_backend_factory(),
+            config = local_backend_factory.config,
+            source = "aer_backend_factory",
+        )
+    end
+
+    return (
+        backend = local_backend_factory(),
+        config = config,
+        source = "user_backend_factory",
+    )
+end
+
+function configured_execution_backend(;
+    ibm_backend::Union{AbstractString,Nothing},
+    local_backend_factory,
+    is_local::Bool,
+    channel::AbstractString,
+    instance::Union{AbstractString,Nothing},
+    aer_config::AerBackendConfig,
+)
+    if isnothing(ibm_backend)
+        local_backend = configured_local_backend(local_backend_factory, aer_config)
+        return (
+            backend = local_backend.backend,
+            execution_mode = "local",
+            config = local_backend.config,
+            source = local_backend.source,
+        )
+    end
+
+    remote_backend = runtime_service(channel=channel, instance=instance).backend(ibm_backend)
+    if is_local
+        return (
+            backend = local_aer_backend_from_backend(remote_backend, aer_config),
+            execution_mode = "local",
+            config = aer_config,
+            source = "aer_from_backend",
+        )
+    end
+
+    return (
+        backend = remote_backend,
+        execution_mode = "cloud",
+        config = aer_config,
+        source = "cloud_backend",
+    )
+end
+
+function preset_pass_manager(backend; optimization_level::Integer = 3, seed_transpiler = nothing)
+    if isnothing(seed_transpiler)
+        return qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
+            backend=backend,
+            optimization_level=optimization_level,
+        )
+    end
+
+    return qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
+        backend=backend,
+        optimization_level=optimization_level,
+        seed_transpiler=seed_transpiler,
+    )
 end
 
 function backend_name(backend)
@@ -390,14 +548,48 @@ function sample_bits(key)
     return reverse(Int[(digit == '1') for digit in bitstring])
 end
 
-function empty_metadata(algorithm::AbstractString, backend::AbstractString, execution_mode::AbstractString)
+function aer_backend_metadata(config::AerBackendConfig, source::AbstractString)
     return Dict{String,Any}(
+        "source" => String(source),
+        "method" => config.method,
+        "precision" => config.precision,
+        "max_parallel_threads" => config.max_parallel_threads,
+        "mps_omp_threads" => config.mps_omp_threads,
+        "mps_truncation_threshold" => config.mps_truncation_threshold,
+        "mps_max_bond_dimension" => config.mps_max_bond_dimension,
+        "mps_sample_measure_algorithm" => config.mps_sample_measure_algorithm,
+    )
+end
+
+function seed_metadata(config::AerBackendConfig)
+    return Dict{String,Any}(
+        "simulator" => config.seed_simulator,
+        "transpiler" => config.seed_transpiler,
+    )
+end
+
+function empty_metadata(
+    algorithm::AbstractString,
+    backend::AbstractString,
+    execution_mode::AbstractString;
+    backend_config::Union{AerBackendConfig,Nothing} = nothing,
+    backend_config_source::Union{AbstractString,Nothing} = nothing,
+)
+    metadata = Dict{String,Any}(
         "origin" => "$(algorithm) @ $(backend)",
         "backend" => backend,
         "execution_mode" => execution_mode,
         "time" => Dict{String,Any}(),
         "evals" => Float64[],
     )
+
+    if !isnothing(backend_config)
+        source = isnothing(backend_config_source) ? "unknown" : backend_config_source
+        metadata["backend_configuration"] = aer_backend_metadata(backend_config, source)
+        metadata["seeds"] = seed_metadata(backend_config)
+    end
+
+    return metadata
 end
 
 function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}

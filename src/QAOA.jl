@@ -2,16 +2,17 @@ module QAOA
 
 using PythonCall: pyconvert, pylist, pydict, pyint, @pyexec
 using ..QiskitOpt:
+    AerBackendConfig,
     backend_name,
+    configured_execution_backend,
     default_local_backend,
     empty_metadata,
+    preset_pass_manager,
     qiskit,
     qiskit_ibm_runtime,
-    qiskit_aer,
     quadratic_program,
     runtime_channel,
     runtime_instance,
-    runtime_service,
     sample_bits,
     scipy,
     numpy
@@ -31,6 +32,15 @@ QUBODrivers.@setup Optimizer begin
         IBMFakeBackend["ibm_fake_backend"]         = default_local_backend
         IBMBackend["ibm_backend"]::Union{String, Nothing} = nothing
         IsLocal["is_local"]::Bool                  = false
+        AerBackendMethod["aer_backend_method"]::Union{String, Nothing} = "matrix_product_state"
+        AerPrecision["aer_precision"]::Union{String, Nothing} = nothing
+        AerMaxParallelThreads["aer_max_parallel_threads"]::Union{Integer, Nothing} = nothing
+        AerMPSOmpThreads["aer_mps_omp_threads"]::Union{Integer, Nothing} = nothing
+        AerMPSTruncationThreshold["aer_mps_truncation_threshold"]::Union{Real, Nothing} = nothing
+        AerMPSMaxBondDimension["aer_mps_max_bond_dimension"]::Union{Integer, Nothing} = nothing
+        AerMPSSampleMeasureAlgorithm["aer_mps_sample_measure_algorithm"]::Union{String, Nothing} = nothing
+        AerSeedSimulator["aer_seed_simulator"]::Union{Integer, Nothing} = nothing
+        TranspilerSeed["transpiler_seed"]::Union{Integer, Nothing} = nothing
         Channel["channel"]::Union{String, Nothing} = nothing
         Instance["instance"]::Union{String, Nothing} = nothing
     end
@@ -76,6 +86,17 @@ function retrieve(
     instance        = runtime_instance(MOI.get(sampler, QAOA.Instance()))
     initial_parameters   = MOI.get(sampler, QAOA.InitialParameters())
     is_local         = MOI.get(sampler, QAOA.IsLocal())
+    aer_config = AerBackendConfig(
+        method=MOI.get(sampler, QAOA.AerBackendMethod()),
+        precision=MOI.get(sampler, QAOA.AerPrecision()),
+        max_parallel_threads=MOI.get(sampler, QAOA.AerMaxParallelThreads()),
+        mps_omp_threads=MOI.get(sampler, QAOA.AerMPSOmpThreads()),
+        mps_truncation_threshold=MOI.get(sampler, QAOA.AerMPSTruncationThreshold()),
+        mps_max_bond_dimension=MOI.get(sampler, QAOA.AerMPSMaxBondDimension()),
+        mps_sample_measure_algorithm=MOI.get(sampler, QAOA.AerMPSSampleMeasureAlgorithm()),
+        seed_simulator=MOI.get(sampler, QAOA.AerSeedSimulator()),
+        seed_transpiler=MOI.get(sampler, QAOA.TranspilerSeed()),
+    )
 
     @pyexec """
     def cost_function(params, ansatz, hamiltonian, estimator):
@@ -85,16 +106,16 @@ function retrieve(
         return energy
     """ => cost_function
 
-    backend, execution_mode = if isnothing(ibm_backend)
-        (ibm_fake_backend(), "local")
-    else
-        remote_backend = runtime_service(channel=channel, instance=instance).backend(ibm_backend)
-        if is_local
-            (qiskit_aer().AerSimulator.from_backend(remote_backend), "local")
-        else
-            (remote_backend, "cloud")
-        end
-    end
+    backend_selection = configured_execution_backend(
+        ibm_backend=ibm_backend,
+        local_backend_factory=ibm_fake_backend,
+        is_local=is_local,
+        channel=channel,
+        instance=instance,
+        aer_config=aer_config,
+    )
+    backend = backend_selection.backend
+    execution_mode = backend_selection.execution_mode
     backend_label = backend_name(backend)
 
     ising_qp = quadratic_program(sampler)
@@ -104,9 +125,10 @@ function retrieve(
         reps=num_layers,
     )
 
-    pass_manager = qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
-        backend=backend,
+    pass_manager = preset_pass_manager(
+        backend;
         optimization_level=3,
+        seed_transpiler=aer_config.seed_transpiler,
     )
     
     ansatz_isa = pass_manager.run(ansatz)
@@ -141,7 +163,13 @@ function retrieve(
 
     callback(result, samples)
 
-    return empty_metadata("QAOA", backend_label, execution_mode)
+    return empty_metadata(
+        "QAOA",
+        backend_label,
+        execution_mode;
+        backend_config=backend_selection.config,
+        backend_config_source=backend_selection.source,
+    )
 end
 
 end # module QAOA

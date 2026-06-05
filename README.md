@@ -90,6 +90,37 @@ set_attribute(model, VQE.Ansatz(), QiskitOpt.qiskit.circuit.library.EfficientSU2
 set_attribute(model, QAOA.NumberOfLayers(), 5)
 ```
 
+## Configuring Local Aer
+Both `QAOA.Optimizer` and `VQE.Optimizer` expose the same Aer local-simulation attributes. They apply when the optimizer builds the default local backend, and also when `IBMBackend()` is combined with `IsLocal() == true` to emulate a named IBM backend through Aer.
+
+```julia
+set_attribute(model, QAOA.AerBackendMethod(), "matrix_product_state") # or VQE.AerBackendMethod
+set_attribute(model, QAOA.AerPrecision(), "single")
+set_attribute(model, QAOA.AerMaxParallelThreads(), 8)
+set_attribute(model, QAOA.AerMPSOmpThreads(), 4)
+set_attribute(model, QAOA.AerMPSTruncationThreshold(), 1.0e-8)
+set_attribute(model, QAOA.AerMPSMaxBondDimension(), 128)
+set_attribute(model, QAOA.AerMPSSampleMeasureAlgorithm(), "mps_apply_measure")
+set_attribute(model, QAOA.AerSeedSimulator(), 73001)
+set_attribute(model, QAOA.TranspilerSeed(), 73001)
+```
+
+The returned `SampleSet` metadata records the selected backend configuration and simulator/transpiler seeds. If you need complete control, the existing backend-factory override remains available:
+
+```julia
+set_attribute(
+    model,
+    QAOA.IBMFakeBackend(),
+    QiskitOpt.local_aer_backend_factory(
+        method="statevector",
+        precision="single",
+        seed_simulator=73001,
+    ),
+)
+```
+
+You can still provide any zero-argument function that returns a Qiskit backend through `IBMFakeBackend()`.
+
 ## Choosing a Local Backend
 
 ```julia

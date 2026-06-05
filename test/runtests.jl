@@ -1,6 +1,6 @@
 using Test
 using QiskitOpt
-using QiskitOpt: QAOA, QUBODrivers, VQE
+using QiskitOpt: QAOA, QUBODrivers, QUBOTools, VQE
 
 MOI = QUBODrivers.MOI
 
@@ -182,6 +182,42 @@ function solve_locally_without_runtime_service(
     end
 end
 
+function sample_locally_without_runtime_service(
+    optimizer_factory,
+    optimizer_module,
+    configure!::Function = (_, _) -> nothing;
+    max_iterations=1,
+    number_of_reads=16,
+)
+    withenv(
+        "QISKIT_IBM_TOKEN" => nothing,
+        "QISKIT_IBM_INSTANCE" => nothing,
+        "QISKIT_IBM_CHANNEL" => nothing,
+        "IBMQ_API_TOKEN" => nothing,
+        "IBMQ_INSTANCE" => nothing,
+    ) do
+        previous_builder = QiskitOpt._runtime_service_builder[]
+        QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error(
+            "runtime service should not be created for local execution",
+        )
+
+        try
+            model, _ = build_model(optimizer_factory)
+            configure_solver!(
+                model,
+                optimizer_module;
+                max_iterations=max_iterations,
+                number_of_reads=number_of_reads,
+            )
+            configure!(model, optimizer_module)
+            MOI.optimize!(model)
+            return QUBOTools.solution(MOI.get(model, MOI.RawSolver()))
+        finally
+            QiskitOpt._runtime_service_builder[] = previous_builder
+        end
+    end
+end
+
 function run_qubodrivers_suite(optimizer_module)
     QUBODrivers.test(optimizer_module.Optimizer) do model
         MOI.set(model, optimizer_module.MaximumIterations(), 5)
@@ -239,6 +275,84 @@ end
 @testset "Local-first execution" begin
     solve_locally_without_runtime_service(QAOA.Optimizer, QAOA)
     solve_locally_without_runtime_service(VQE.Optimizer, VQE)
+end
+
+@testset "Aer backend configuration helpers" begin
+    default_config = QiskitOpt.AerBackendConfig()
+    @test QiskitOpt.aer_backend_options(default_config) == (method="matrix_product_state",)
+
+    custom_config = QiskitOpt.AerBackendConfig(
+        method="statevector",
+        precision="single",
+        max_parallel_threads=2,
+        mps_omp_threads=1,
+        mps_truncation_threshold=1.0e-6,
+        mps_max_bond_dimension=32,
+        mps_sample_measure_algorithm="mps_apply_measure",
+        seed_simulator=1234,
+        seed_transpiler=5678,
+    )
+    options = QiskitOpt.aer_backend_options(custom_config)
+    @test options.method == "statevector"
+    @test options.precision == "single"
+    @test options.max_parallel_threads == 2
+    @test options.mps_omp_threads == 1
+    @test options.mps_truncation_threshold == 1.0e-6
+    @test options.mps_max_bond_dimension == 32
+    @test options.mps_sample_measure_algorithm == "mps_apply_measure"
+    @test options.seed_simulator == 1234
+    @test !(:seed_transpiler in keys(options))
+
+    metadata = QiskitOpt.empty_metadata(
+        "QAOA",
+        "aer_simulator",
+        "local";
+        backend_config=custom_config,
+        backend_config_source="aer_attributes",
+    )
+    @test metadata["backend_configuration"]["source"] == "aer_attributes"
+    @test metadata["backend_configuration"]["method"] == "statevector"
+    @test metadata["backend_configuration"]["precision"] == "single"
+    @test metadata["seeds"]["simulator"] == 1234
+    @test metadata["seeds"]["transpiler"] == 5678
+
+    factory = QiskitOpt.local_aer_backend_factory(custom_config)
+    @test factory.config.seed_simulator == 1234
+    @test QiskitOpt.local_aer_backend_factory().config.method == "matrix_product_state"
+
+    sentinel_backend = Ref(:backend)
+    selected = QiskitOpt.configured_local_backend(() -> sentinel_backend[], default_config)
+    @test selected.backend === :backend
+    @test selected.source == "user_backend_factory"
+end
+
+@testset "Aer backend configuration is recorded in SampleSet metadata" begin
+    for (optimizer_factory, optimizer_module, algorithm) in (
+        (QAOA.Optimizer, QAOA, "QAOA"),
+        (VQE.Optimizer, VQE, "VQE"),
+    )
+        sampleset = sample_locally_without_runtime_service(
+            optimizer_factory,
+            optimizer_module,
+            (model, module_) -> begin
+                MOI.set(model, module_.AerPrecision(), "single")
+                MOI.set(model, module_.AerMaxParallelThreads(), 1)
+                MOI.set(model, module_.AerSeedSimulator(), 1234)
+                MOI.set(model, module_.TranspilerSeed(), 5678)
+            end;
+            max_iterations=1,
+            number_of_reads=16,
+        )
+        metadata = QUBOTools.metadata(sampleset)
+        @test startswith(metadata["origin"], "$(algorithm) @ ")
+        @test metadata["execution_mode"] == "local"
+        @test metadata["backend_configuration"]["source"] == "aer_attributes"
+        @test metadata["backend_configuration"]["method"] == "matrix_product_state"
+        @test metadata["backend_configuration"]["precision"] == "single"
+        @test metadata["backend_configuration"]["max_parallel_threads"] == 1
+        @test metadata["seeds"]["simulator"] == 1234
+        @test metadata["seeds"]["transpiler"] == 5678
+    end
 end
 
 @testset "Max-sense objective reporting stays consistent" begin
