@@ -90,6 +90,39 @@ set_attribute(model, VQE.Ansatz(), QiskitOpt.qiskit.circuit.library.EfficientSU2
 set_attribute(model, QAOA.NumberOfLayers(), 5)
 ```
 
+## Initial Parameters
+Both optimizers expose helpers for reproducible initial parameters and validate
+the vector length before Qiskit execution starts.
+
+```julia
+# QAOA parameter order is beta angles followed by gamma angles.
+QiskitOpt.QAOA.parameter_names(36; number_of_layers=2)
+
+qaoa_start = QiskitOpt.QAOA.fixed_angle_initial_parameters(
+    number_of_layers=2,
+    gamma_sign=-1,
+)
+set_attribute(model, QiskitOpt.QAOA.NumberOfLayers(), 2)
+set_attribute(model, QiskitOpt.QAOA.InitialParameters(), qaoa_start)
+set_attribute(model, QiskitOpt.QAOA.InitialParameterSource(), QiskitOpt.QAOA.FIXED_ANGLE_SOURCE)
+```
+
+```julia
+# VQE parameter order comes from the selected Qiskit ansatz.
+vqe_names = QiskitOpt.VQE.parameter_names(n_variables=36)
+vqe_start = QiskitOpt.VQE.random_initial_parameters(n_variables=36, seed=73001)
+set_attribute(model, QiskitOpt.VQE.InitialParameters(), vqe_start)
+set_attribute(model, QiskitOpt.VQE.InitialParameterSource(), "random_seed_73001")
+```
+
+Returned `SampleSet` metadata records the source, parameter names, and actual
+initial vector under `metadata["initial_parameters"]`. Disable this with
+`RecordInitialParameters()` when you do not want parameters retained in metadata:
+
+```julia
+set_attribute(model, QiskitOpt.QAOA.RecordInitialParameters(), false)
+```
+
 ## Configuring Local Aer
 Both `QAOA.Optimizer` and `VQE.Optimizer` expose the same Aer local-simulation attributes. They apply when the optimizer builds the default local backend, and also when `IBMBackend()` is combined with `IsLocal() == true` to emulate a named IBM backend through Aer.
 

@@ -342,11 +342,66 @@ end
     @test selected.source == "user_backend_factory"
 end
 
+@testset "Initial parameter helpers" begin
+    @test QAOA.parameter_names(3; number_of_layers=2) == ["β[0]", "β[1]", "γ[0]", "γ[1]"]
+    @test QAOA.parameter_count(3; number_of_layers=2) == 4
+    @test QAOA.fixed_angle_initial_parameters(number_of_layers=2) == [0.555, 0.293, -0.488, -0.898]
+    @test QAOA.fixed_angle_initial_parameters(number_of_layers=1; gamma_sign=1) == [0.393, 0.616]
+    @test_throws ArgumentError QAOA.fixed_angle_initial_parameters(number_of_layers=6)
+
+    qaoa_seeded = QAOA.random_initial_parameters(number_of_layers=2; seed=1234)
+    @test length(qaoa_seeded) == 4
+    @test qaoa_seeded == QAOA.random_initial_parameters(number_of_layers=2; seed=1234)
+    @test qaoa_seeded != QAOA.random_initial_parameters(number_of_layers=2; seed=1235)
+
+    vqe_names = VQE.parameter_names(n_variables=3)
+    @test length(vqe_names) == VQE.parameter_count(n_variables=3)
+    @test VQE.parameter_count(n_variables=3) == 24
+    @test first(vqe_names) == "θ[0]"
+    @test last(vqe_names) == "θ[23]"
+
+    vqe_seeded = VQE.random_initial_parameters(n_variables=3; seed=73001)
+    @test length(vqe_seeded) == 24
+    @test vqe_seeded == VQE.random_initial_parameters(n_variables=3; seed=73001)
+    @test vqe_seeded != VQE.random_initial_parameters(n_variables=3; seed=73002)
+end
+
+@testset "Initial parameter validation fails before backend execution" begin
+    previous_builder = QiskitOpt._runtime_service_builder[]
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
+
+    try
+        qaoa_model, _ = build_model(QAOA.Optimizer)
+        MOI.set(qaoa_model, QAOA.IBMBackend(), "ibm_fez")
+        MOI.set(qaoa_model, QAOA.InitialParameters(), [0.0])
+        @test_throws ArgumentError MOI.optimize!(qaoa_model)
+
+        vqe_model, _ = build_model(VQE.Optimizer)
+        MOI.set(vqe_model, VQE.IBMBackend(), "ibm_fez")
+        MOI.set(vqe_model, VQE.InitialParameters(), [0.0])
+        @test_throws ArgumentError MOI.optimize!(vqe_model)
+    finally
+        QiskitOpt._runtime_service_builder[] = previous_builder
+    end
+end
+
 @testset "Aer backend configuration is recorded in SampleSet metadata" begin
     for (optimizer_factory, optimizer_module, algorithm) in (
         (QAOA.Optimizer, QAOA, "QAOA"),
         (VQE.Optimizer, VQE, "VQE"),
     )
+        initial_parameters = if optimizer_module === QAOA
+            QAOA.fixed_angle_initial_parameters(number_of_layers=1)
+        else
+            VQE.random_initial_parameters(n_variables=3; seed=73001)
+        end
+        initial_parameter_names = if optimizer_module === QAOA
+            QAOA.parameter_names(3; number_of_layers=1)
+        else
+            VQE.parameter_names(n_variables=3)
+        end
+        initial_parameter_source = optimizer_module === QAOA ? QAOA.FIXED_ANGLE_SOURCE : "random_seed_73001"
+
         sampleset = sample_locally_without_runtime_service(
             optimizer_factory,
             optimizer_module,
@@ -355,6 +410,8 @@ end
                 MOI.set(model, module_.AerMaxParallelThreads(), 1)
                 MOI.set(model, module_.AerSeedSimulator(), 1234)
                 MOI.set(model, module_.TranspilerSeed(), 5678)
+                MOI.set(model, module_.InitialParameters(), initial_parameters)
+                MOI.set(model, module_.InitialParameterSource(), initial_parameter_source)
             end;
             max_iterations=1,
             number_of_reads=16,
@@ -368,7 +425,24 @@ end
         @test metadata["backend_configuration"]["max_parallel_threads"] == 1
         @test metadata["seeds"]["simulator"] == 1234
         @test metadata["seeds"]["transpiler"] == 5678
+        @test metadata["initial_parameters"]["source"] == initial_parameter_source
+        @test metadata["initial_parameters"]["parameter_names"] == initial_parameter_names
+        @test metadata["initial_parameters"]["values"] == initial_parameters
     end
+end
+
+@testset "Initial parameter metadata can be disabled" begin
+    sampleset = sample_locally_without_runtime_service(
+        QAOA.Optimizer,
+        QAOA,
+        (model, module_) -> begin
+            MOI.set(model, module_.InitialParameters(), QAOA.fixed_angle_initial_parameters(number_of_layers=1))
+            MOI.set(model, module_.RecordInitialParameters(), false)
+        end;
+        max_iterations=1,
+        number_of_reads=8,
+    )
+    @test !haskey(QUBOTools.metadata(sampleset), "initial_parameters")
 end
 
 @testset "Max-sense objective reporting stays consistent" begin

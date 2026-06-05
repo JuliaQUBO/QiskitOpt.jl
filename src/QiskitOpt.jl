@@ -571,6 +571,86 @@ function seed_metadata(;
     )
 end
 
+function _seed_state(seed::Integer)
+    modulus = BigInt(typemax(UInt64)) + 1
+    return UInt64(mod(BigInt(seed), modulus))
+end
+
+function _splitmix64_next(state::UInt64)
+    state += 0x9e3779b97f4a7c15
+    value = state
+    value = xor(value, value >> 30) * 0xbf58476d1ce4e5b9
+    value = xor(value, value >> 27) * 0x94d049bb133111eb
+    return state, xor(value, value >> 31)
+end
+
+function _unit_float(value::UInt64)
+    return Float64(value >> 11) * 0x1.0p-53
+end
+
+function _seeded_unit_values(seed::Integer, count::Integer)
+    state = _seed_state(seed)
+    values = Vector{Float64}(undef, count)
+    for index in eachindex(values)
+        state, value = _splitmix64_next(state)
+        values[index] = _unit_float(value)
+    end
+    return values
+end
+
+function random_unit_values(count::Integer; seed = nothing, rng = nothing)
+    count >= 0 || throw(ArgumentError("count must be nonnegative"))
+    if !isnothing(seed) && !isnothing(rng)
+        throw(ArgumentError("provide either seed or rng, not both"))
+    end
+
+    if !isnothing(rng)
+        return rand(rng, Float64, count)
+    elseif !isnothing(seed)
+        seed isa Integer || throw(ArgumentError("seed must be an integer"))
+        return _seeded_unit_values(seed, count)
+    end
+
+    return rand(Float64, count)
+end
+
+function qiskit_parameter_names(circuit)
+    return String[
+        PythonCall.pyconvert(String, PythonCall.pystr(parameter))
+        for parameter in circuit.parameters
+    ]
+end
+
+function validate_initial_parameters(
+    initial_parameters::AbstractVector,
+    expected_count::Integer,
+    algorithm::AbstractString,
+)
+    actual_count = length(initial_parameters)
+    if actual_count != expected_count
+        throw(
+            ArgumentError(
+                "$(algorithm) InitialParameters length $(actual_count) does not match " *
+                "the expected Qiskit ansatz parameter count $(expected_count)",
+            ),
+        )
+    end
+
+    return nothing
+end
+
+function initial_parameter_metadata(
+    source::AbstractString,
+    values::AbstractVector,
+    names::AbstractVector{<:AbstractString},
+)
+    return Dict{String,Any}(
+        "source" => String(source),
+        "parameter_names" => String.(names),
+        "values" => Float64.(values),
+    )
+end
+
 function empty_metadata(
     algorithm::AbstractString,
     backend::AbstractString,
@@ -578,6 +658,9 @@ function empty_metadata(
     backend_config::Union{AerBackendConfig,Nothing} = nothing,
     backend_config_source::Union{AbstractString,Nothing} = nothing,
     seed_transpiler = nothing,
+    initial_parameters::Union{AbstractVector,Nothing} = nothing,
+    initial_parameter_names::Union{AbstractVector{<:AbstractString},Nothing} = nothing,
+    initial_parameter_source::Union{AbstractString,Nothing} = nothing,
 )
     metadata = Dict{String,Any}(
         "origin" => "$(algorithm) @ $(backend)",
@@ -602,6 +685,12 @@ function empty_metadata(
             seed_simulator=seed_simulator,
             seed_transpiler=seed_transpiler,
         )
+    end
+
+    if !isnothing(initial_parameters)
+        source = isnothing(initial_parameter_source) ? "unknown" : initial_parameter_source
+        names = isnothing(initial_parameter_names) ? String[] : initial_parameter_names
+        metadata["initial_parameters"] = initial_parameter_metadata(source, initial_parameters, names)
     end
 
     return metadata
