@@ -60,6 +60,19 @@ for i = 1:result_count(model)
 end
 ```
 
+## Runtime Diagnostics
+Use `check_runtime` to verify the Julia/Python bridge and local Qiskit stack before running an optimizer:
+
+```julia
+using QiskitOpt
+
+diagnostics = QiskitOpt.check_runtime(; local_backend=true, ibm=false)
+diagnostics.ok
+```
+
+Julia reserves `local` as syntax, so the Julia-callable keyword is `local_backend`.
+With `ibm=false`, diagnostics do not import `qiskit_ibm_runtime`. Set `ibm=true` when you want IBM Runtime availability reported separately.
+
 ## Updating optimization parameters
 
 ```julia

@@ -67,6 +67,11 @@ const LARGE_LOCAL_L = [
     42.7483,
 ]
 
+function python_module_loaded(name)
+    sys = QiskitOpt.PythonCall.pyimport("sys")
+    return QiskitOpt.PythonCall.pyconvert(Bool, sys.modules.__contains__(name))
+end
+
 struct MockRuntimeService
     backend::Function
 end
@@ -182,6 +187,51 @@ function run_qubodrivers_suite(optimizer_module)
         MOI.set(model, optimizer_module.MaximumIterations(), 5)
         MOI.set(model, optimizer_module.NumberOfReads(), 64)
     end
+end
+
+@testset "Runtime diagnostics and lazy imports" begin
+    @test !python_module_loaded("qiskit_ibm_runtime")
+
+    local_diagnostics = QiskitOpt.check_runtime(; local_backend=true, ibm=false, verbose=false)
+    @test local_diagnostics.ok
+    @test local_diagnostics.packages["qiskit"].ok
+    @test local_diagnostics.packages["qiskit_aer"].ok
+    @test local_diagnostics.packages["qiskit_optimization"].ok
+    @test !isnothing(local_diagnostics.packages["qiskit"].version)
+    @test isnothing(local_diagnostics.ibm_runtime)
+    @test !haskey(local_diagnostics.packages, "qiskit_ibm_runtime")
+    @test !isnothing(local_diagnostics.local_backend)
+    @test local_diagnostics.local_backend.ok
+    @test !python_module_loaded("qiskit_ibm_runtime")
+
+    missing_error = try
+        QiskitOpt._import_python_module(
+            "qiskitopt_missing_python_package_for_test",
+            "qiskitopt-missing-python-package-for-test",
+        )
+    catch err
+        err
+    end
+    @test missing_error isa QiskitOpt.PythonPackageError
+    missing_message = sprint(showerror, missing_error)
+    @test occursin("qiskitopt-missing-python-package-for-test", missing_message)
+    @test occursin("Python executable:", missing_message)
+
+    missing_diagnostic = QiskitOpt._diagnose_python_module(
+        "qiskitopt_missing_python_package_for_test",
+        "qiskitopt-missing-python-package-for-test",
+    )
+    @test !missing_diagnostic.ok
+    @test occursin("qiskitopt-missing-python-package-for-test", missing_diagnostic.message)
+    @test occursin("Python executable:", missing_diagnostic.message)
+
+    pair_alias_diagnostics = QiskitOpt.check_runtime(; :local => false, ibm=false, verbose=false)
+    @test isnothing(pair_alias_diagnostics.local_backend)
+
+    ibm_diagnostics = QiskitOpt.check_runtime(; local_backend=false, ibm=true, verbose=false)
+    @test !isnothing(ibm_diagnostics.ibm_runtime)
+    @test haskey(ibm_diagnostics.packages, "qiskit_ibm_runtime")
+    @test ibm_diagnostics.ibm_runtime.ok
 end
 
 @testset "Local-first execution" begin

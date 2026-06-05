@@ -21,6 +21,10 @@ MOI = QUBODrivers.MOI
 Sample = QUBODrivers.Sample
 SampleSet = QUBODrivers.SampleSet
 
+function default_ansatz(; kwargs...)
+    return qiskit().circuit.library.EfficientSU2(; kwargs...)
+end
+
 QUBODrivers.@setup Optimizer begin
     name    = "VQE @ IBM Quantum"
     attributes = begin
@@ -32,7 +36,7 @@ QUBODrivers.@setup Optimizer begin
         IsLocal["is_local"]::Bool                  = false
         Channel["channel"]::Union{String, Nothing} = nothing
         Instance["instance"]::Union{String, Nothing} = nothing
-        Ansatz["ansatz"]                           = qiskit.circuit.library.EfficientSU2
+        Ansatz["ansatz"]                           = default_ansatz
     end
 end
 
@@ -90,7 +94,7 @@ function retrieve(
     else
         remote_backend = runtime_service(channel=channel, instance=instance).backend(ibm_backend)
         if is_local
-            (qiskit_aer.AerSimulator.from_backend(remote_backend), "local")
+            (qiskit_aer().AerSimulator.from_backend(remote_backend), "local")
         else
             (remote_backend, "cloud")
         end
@@ -102,7 +106,7 @@ function retrieve(
     num_qubits = pyconvert(Int, ising_hamiltonian.num_qubits)
     ansatz = ansatz_instance(num_qubits=num_qubits)
 
-    pass_manager = qiskit.transpiler.preset_passmanagers.generate_preset_pass_manager(
+    pass_manager = qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
         backend=backend,
         optimization_level=3,
     )
@@ -112,16 +116,16 @@ function retrieve(
 
 
     if isnothing(initial_parameters)
-        initial_parameters = numpy.zeros(pyint(pyconvert(Int, ansatz_isa.num_parameters)))
+        initial_parameters = numpy().zeros(pyint(pyconvert(Int, ansatz_isa.num_parameters)))
     else
-        initial_parameters = numpy.array(initial_parameters)
+        initial_parameters = numpy().array(initial_parameters)
     end
 
-    estimator = qiskit_ibm_runtime.EstimatorV2(mode=backend)
+    estimator = qiskit_ibm_runtime().EstimatorV2(mode=backend)
     estimator.options.default_shots = num_reads
     scipy_options = pydict()
     scipy_options["maxiter"] = max_iter
-    result = scipy.optimize.minimize(
+    result = scipy().optimize.minimize(
         cost_function,
         initial_parameters,
         args=(ansatz_isa, ising_hamiltonian, estimator),
@@ -133,7 +137,7 @@ function retrieve(
     qc.measure_all()
     optimized_qc = pass_manager.run(qc)
 
-    qiskit_sampler = qiskit_ibm_runtime.SamplerV2(mode=backend)
+    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
     sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(num_reads)).result()[0]
     samples = sampling_result.data.meas.get_counts()
 
