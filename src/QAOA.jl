@@ -90,7 +90,7 @@ function retrieve(
     else
         remote_backend = runtime_service(channel=channel, instance=instance).backend(ibm_backend)
         if is_local
-            (qiskit_aer.AerSimulator.from_backend(remote_backend), "local")
+            (qiskit_aer().AerSimulator.from_backend(remote_backend), "local")
         else
             (remote_backend, "cloud")
         end
@@ -99,12 +99,12 @@ function retrieve(
 
     ising_qp = quadratic_program(sampler)
     ising_hamiltonian = ising_qp[0]
-    ansatz = qiskit.circuit.library.QAOAAnsatz(
+    ansatz = qiskit().circuit.library.QAOAAnsatz(
         ising_hamiltonian,
         reps=num_layers,
     )
 
-    pass_manager = qiskit.transpiler.preset_passmanagers.generate_preset_pass_manager(
+    pass_manager = qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
         backend=backend,
         optimization_level=3,
     )
@@ -114,16 +114,16 @@ function retrieve(
 
 
     if isnothing(initial_parameters)
-        initial_parameters = numpy.zeros(pyint(pyconvert(Int, ansatz_isa.num_parameters)))
+        initial_parameters = numpy().zeros(pyint(pyconvert(Int, ansatz_isa.num_parameters)))
     else
-        initial_parameters = numpy.array(initial_parameters)
+        initial_parameters = numpy().array(initial_parameters)
     end
 
-    estimator = qiskit_ibm_runtime.EstimatorV2(mode=backend)
+    estimator = qiskit_ibm_runtime().EstimatorV2(mode=backend)
     estimator.options.default_shots = num_reads
     scipy_options = pydict()
     scipy_options["maxiter"] = max_iter
-    result = scipy.optimize.minimize(
+    result = scipy().optimize.minimize(
         cost_function,
         initial_parameters,
         args=(ansatz_isa, ising_hamiltonian, estimator),
@@ -135,7 +135,7 @@ function retrieve(
     qc.measure_all()
     optimized_qc = pass_manager.run(qc)
 
-    qiskit_sampler = qiskit_ibm_runtime.SamplerV2(mode=backend)
+    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
     sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(num_reads)).result()[0]
     samples = sampling_result.data.meas.get_counts()
 
