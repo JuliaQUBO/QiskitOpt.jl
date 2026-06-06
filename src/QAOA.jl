@@ -86,6 +86,18 @@ function _parameter_names(number_of_layers::Integer)
     return vcat(beta_names, gamma_names)
 end
 
+function _fixed_angle_record(number_of_layers::Integer, family::Symbol)
+    p = _check_number_of_layers(number_of_layers)
+    if family != :wurtz_lykov_3regular_tree
+        throw(ArgumentError("unsupported fixed-angle family: $(family)"))
+    end
+    if !haskey(_WURTZ_LYKOV_3REGULAR_TREE_ANGLES, p)
+        throw(ArgumentError("fixed-angle family $(family) supports number_of_layers values 1 through 5"))
+    end
+
+    return _WURTZ_LYKOV_3REGULAR_TREE_ANGLES[p]
+end
+
 """
     QAOA.parameter_names([problem_or_nqubits]; number_of_layers)
 
@@ -146,6 +158,19 @@ function random_initial_parameters(; number_of_layers::Integer, seed = nothing, 
 end
 
 """
+    QAOA.fixed_angle_guarantee(; number_of_layers, family=:wurtz_lykov_3regular_tree)
+
+Return the approximation-ratio guarantee reported with the built-in fixed-angle
+table.
+"""
+function fixed_angle_guarantee(;
+    number_of_layers::Integer,
+    family::Symbol = :wurtz_lykov_3regular_tree,
+)
+    return Float64(_fixed_angle_record(number_of_layers, family).guarantee)
+end
+
+"""
     QAOA.fixed_angle_initial_parameters(; number_of_layers, family=:wurtz_lykov_3regular_tree, gamma_sign=-1)
 
 Return fixed-angle QAOA warm-start parameters in Qiskit's list-binding order.
@@ -156,15 +181,7 @@ function fixed_angle_initial_parameters(;
     family::Symbol = :wurtz_lykov_3regular_tree,
     gamma_sign::Real = -1,
 )
-    p = _check_number_of_layers(number_of_layers)
-    if family != :wurtz_lykov_3regular_tree
-        throw(ArgumentError("unsupported fixed-angle family: $(family)"))
-    end
-    if !haskey(_WURTZ_LYKOV_3REGULAR_TREE_ANGLES, p)
-        throw(ArgumentError("fixed-angle family $(family) supports number_of_layers values 1 through 5"))
-    end
-
-    angles = _WURTZ_LYKOV_3REGULAR_TREE_ANGLES[p]
+    angles = _fixed_angle_record(number_of_layers, family)
     return Float64[v for v in vcat(angles.beta, gamma_sign .* angles.gamma)]
 end
 

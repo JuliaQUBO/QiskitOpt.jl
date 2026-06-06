@@ -102,6 +102,7 @@ qaoa_start = QiskitOpt.QAOA.fixed_angle_initial_parameters(
     number_of_layers=2,
     gamma_sign=-1,
 )
+qaoa_guarantee = QiskitOpt.QAOA.fixed_angle_guarantee(number_of_layers=2)
 set_attribute(model, QiskitOpt.QAOA.NumberOfLayers(), 2)
 set_attribute(model, QiskitOpt.QAOA.InitialParameters(), qaoa_start)
 set_attribute(model, QiskitOpt.QAOA.InitialParameterSource(), QiskitOpt.QAOA.FIXED_ANGLE_SOURCE)

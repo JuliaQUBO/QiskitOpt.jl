@@ -225,6 +225,21 @@ function run_qubodrivers_suite(optimizer_module)
     end
 end
 
+function expected_maxcut_value(statevector, edges)
+    probabilities = QiskitOpt.PythonCall.pyconvert(
+        Dict{String,Float64},
+        statevector.probabilities_dict(),
+    )
+
+    expected_value = 0.0
+    for (bitstring, probability) in probabilities
+        bits = reverse(Int[digit == '1' for digit in bitstring])
+        expected_value += probability * sum(bits[i] != bits[j] for (i, j) in edges)
+    end
+
+    return expected_value
+end
+
 @testset "Runtime diagnostics and lazy imports" begin
     @test !python_module_loaded("qiskit_ibm_runtime")
 
@@ -346,8 +361,62 @@ end
     @test QAOA.parameter_names(3; number_of_layers=2) == ["β[0]", "β[1]", "γ[0]", "γ[1]"]
     @test QAOA.parameter_count(3; number_of_layers=2) == 4
     @test QAOA.fixed_angle_initial_parameters(number_of_layers=2) == [0.555, 0.293, -0.488, -0.898]
+    @test QAOA.fixed_angle_guarantee(number_of_layers=2) == 0.7559
     @test QAOA.fixed_angle_initial_parameters(number_of_layers=1; gamma_sign=1) == [0.393, 0.616]
     @test_throws ArgumentError QAOA.fixed_angle_initial_parameters(number_of_layers=6)
+    @test_throws ArgumentError QAOA.fixed_angle_guarantee(number_of_layers=6)
+
+    qaoa_cost_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
+        ("ZI", 1.0),
+        ("IZ", 1.0),
+        ("ZZ", 1.0),
+    ])
+    for number_of_layers in 1:3
+        live_names = QiskitOpt.qiskit_parameter_names(
+            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+                qaoa_cost_operator,
+                reps=number_of_layers,
+            ),
+        )
+        @test QAOA.parameter_names(2; number_of_layers=number_of_layers) == live_names
+        @test QAOA.parameter_names(qaoa_cost_operator; number_of_layers=number_of_layers) == live_names
+    end
+
+    k4_edges = [(1, 2), (2, 3), (3, 4), (4, 1), (1, 3), (2, 4)]
+    k4_maxcut_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
+        ("IIZZ", 0.5),
+        ("IZIZ", 0.5),
+        ("ZIIZ", 0.5),
+        ("IZZI", 0.5),
+        ("ZIZI", 0.5),
+        ("ZZII", 0.5),
+    ])
+    for number_of_layers in 1:3
+        negative_gamma_parameters = QAOA.fixed_angle_initial_parameters(
+            number_of_layers=number_of_layers,
+            gamma_sign=-1,
+        )
+        positive_gamma_parameters = QAOA.fixed_angle_initial_parameters(
+            number_of_layers=number_of_layers,
+            gamma_sign=1,
+        )
+        negative_gamma_state = QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(
+            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+                k4_maxcut_operator,
+                reps=number_of_layers,
+            ).assign_parameters(negative_gamma_parameters),
+        )
+        positive_gamma_state = QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(
+            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+                k4_maxcut_operator,
+                reps=number_of_layers,
+            ).assign_parameters(positive_gamma_parameters),
+        )
+        negative_gamma_ratio = expected_maxcut_value(negative_gamma_state, k4_edges) / 4
+        positive_gamma_ratio = expected_maxcut_value(positive_gamma_state, k4_edges) / 4
+        @test negative_gamma_ratio >= QAOA.fixed_angle_guarantee(number_of_layers=number_of_layers)
+        @test negative_gamma_ratio > positive_gamma_ratio
+    end
 
     qaoa_seeded = QAOA.random_initial_parameters(number_of_layers=2; seed=1234)
     @test length(qaoa_seeded) == 4
