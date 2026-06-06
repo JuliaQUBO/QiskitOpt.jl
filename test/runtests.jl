@@ -225,6 +225,21 @@ function run_qubodrivers_suite(optimizer_module)
     end
 end
 
+function expected_maxcut_value(statevector, edges)
+    probabilities = QiskitOpt.PythonCall.pyconvert(
+        Dict{String,Float64},
+        statevector.probabilities_dict(),
+    )
+
+    expected_value = 0.0
+    for (bitstring, probability) in probabilities
+        bits = reverse(Int[digit == '1' for digit in bitstring])
+        expected_value += probability * sum(bits[i] != bits[j] for (i, j) in edges)
+    end
+
+    return expected_value
+end
+
 @testset "Runtime diagnostics and lazy imports" begin
     @test !python_module_loaded("qiskit_ibm_runtime")
 
@@ -342,11 +357,120 @@ end
     @test selected.source == "user_backend_factory"
 end
 
+@testset "Initial parameter helpers" begin
+    @test QAOA.parameter_names(3; number_of_layers=2) == ["β[0]", "β[1]", "γ[0]", "γ[1]"]
+    @test QAOA.parameter_count(3; number_of_layers=2) == 4
+    @test QAOA.fixed_angle_initial_parameters(number_of_layers=2) == [0.555, 0.293, -0.488, -0.898]
+    @test QAOA.fixed_angle_guarantee(number_of_layers=2) == 0.7559
+    @test QAOA.fixed_angle_initial_parameters(number_of_layers=1; gamma_sign=1) == [0.393, 0.616]
+    @test_throws ArgumentError QAOA.fixed_angle_initial_parameters(number_of_layers=6)
+    @test_throws ArgumentError QAOA.fixed_angle_guarantee(number_of_layers=6)
+
+    qaoa_cost_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
+        ("ZI", 1.0),
+        ("IZ", 1.0),
+        ("ZZ", 1.0),
+    ])
+    for number_of_layers in 1:3
+        live_names = QiskitOpt.qiskit_parameter_names(
+            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+                qaoa_cost_operator,
+                reps=number_of_layers,
+            ),
+        )
+        @test QAOA.parameter_names(2; number_of_layers=number_of_layers) == live_names
+        @test QAOA.parameter_names(qaoa_cost_operator; number_of_layers=number_of_layers) == live_names
+    end
+
+    k4_edges = [(1, 2), (2, 3), (3, 4), (4, 1), (1, 3), (2, 4)]
+    k4_maxcut_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
+        ("IIZZ", 0.5),
+        ("IZIZ", 0.5),
+        ("ZIIZ", 0.5),
+        ("IZZI", 0.5),
+        ("ZIZI", 0.5),
+        ("ZZII", 0.5),
+    ])
+    for number_of_layers in 1:3
+        negative_gamma_parameters = QAOA.fixed_angle_initial_parameters(
+            number_of_layers=number_of_layers,
+            gamma_sign=-1,
+        )
+        positive_gamma_parameters = QAOA.fixed_angle_initial_parameters(
+            number_of_layers=number_of_layers,
+            gamma_sign=1,
+        )
+        negative_gamma_state = QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(
+            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+                k4_maxcut_operator,
+                reps=number_of_layers,
+            ).assign_parameters(negative_gamma_parameters),
+        )
+        positive_gamma_state = QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(
+            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+                k4_maxcut_operator,
+                reps=number_of_layers,
+            ).assign_parameters(positive_gamma_parameters),
+        )
+        negative_gamma_ratio = expected_maxcut_value(negative_gamma_state, k4_edges) / 4
+        positive_gamma_ratio = expected_maxcut_value(positive_gamma_state, k4_edges) / 4
+        @test negative_gamma_ratio >= QAOA.fixed_angle_guarantee(number_of_layers=number_of_layers)
+        @test negative_gamma_ratio > positive_gamma_ratio
+    end
+
+    qaoa_seeded = QAOA.random_initial_parameters(number_of_layers=2; seed=1234)
+    @test length(qaoa_seeded) == 4
+    @test qaoa_seeded == QAOA.random_initial_parameters(number_of_layers=2; seed=1234)
+    @test qaoa_seeded != QAOA.random_initial_parameters(number_of_layers=2; seed=1235)
+
+    vqe_names = VQE.parameter_names(n_variables=3)
+    @test length(vqe_names) == VQE.parameter_count(n_variables=3)
+    @test VQE.parameter_count(n_variables=3) == 24
+    @test first(vqe_names) == "θ[0]"
+    @test last(vqe_names) == "θ[23]"
+
+    vqe_seeded = VQE.random_initial_parameters(n_variables=3; seed=73001)
+    @test length(vqe_seeded) == 24
+    @test vqe_seeded == VQE.random_initial_parameters(n_variables=3; seed=73001)
+    @test vqe_seeded != VQE.random_initial_parameters(n_variables=3; seed=73002)
+end
+
+@testset "Initial parameter validation fails before backend execution" begin
+    previous_builder = QiskitOpt._runtime_service_builder[]
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
+
+    try
+        qaoa_model, _ = build_model(QAOA.Optimizer)
+        MOI.set(qaoa_model, QAOA.IBMBackend(), "ibm_fez")
+        MOI.set(qaoa_model, QAOA.InitialParameters(), [0.0])
+        @test_throws ArgumentError MOI.optimize!(qaoa_model)
+
+        vqe_model, _ = build_model(VQE.Optimizer)
+        MOI.set(vqe_model, VQE.IBMBackend(), "ibm_fez")
+        MOI.set(vqe_model, VQE.InitialParameters(), [0.0])
+        @test_throws ArgumentError MOI.optimize!(vqe_model)
+    finally
+        QiskitOpt._runtime_service_builder[] = previous_builder
+    end
+end
+
 @testset "Aer backend configuration is recorded in SampleSet metadata" begin
     for (optimizer_factory, optimizer_module, algorithm) in (
         (QAOA.Optimizer, QAOA, "QAOA"),
         (VQE.Optimizer, VQE, "VQE"),
     )
+        initial_parameters = if optimizer_module === QAOA
+            QAOA.fixed_angle_initial_parameters(number_of_layers=1)
+        else
+            VQE.random_initial_parameters(n_variables=3; seed=73001)
+        end
+        initial_parameter_names = if optimizer_module === QAOA
+            QAOA.parameter_names(3; number_of_layers=1)
+        else
+            VQE.parameter_names(n_variables=3)
+        end
+        initial_parameter_source = optimizer_module === QAOA ? QAOA.FIXED_ANGLE_SOURCE : "random_seed_73001"
+
         sampleset = sample_locally_without_runtime_service(
             optimizer_factory,
             optimizer_module,
@@ -355,6 +479,8 @@ end
                 MOI.set(model, module_.AerMaxParallelThreads(), 1)
                 MOI.set(model, module_.AerSeedSimulator(), 1234)
                 MOI.set(model, module_.TranspilerSeed(), 5678)
+                MOI.set(model, module_.InitialParameters(), initial_parameters)
+                MOI.set(model, module_.InitialParameterSource(), initial_parameter_source)
             end;
             max_iterations=1,
             number_of_reads=16,
@@ -368,7 +494,24 @@ end
         @test metadata["backend_configuration"]["max_parallel_threads"] == 1
         @test metadata["seeds"]["simulator"] == 1234
         @test metadata["seeds"]["transpiler"] == 5678
+        @test metadata["initial_parameters"]["source"] == initial_parameter_source
+        @test metadata["initial_parameters"]["parameter_names"] == initial_parameter_names
+        @test metadata["initial_parameters"]["values"] == initial_parameters
     end
+end
+
+@testset "Initial parameter metadata can be disabled" begin
+    sampleset = sample_locally_without_runtime_service(
+        QAOA.Optimizer,
+        QAOA,
+        (model, module_) -> begin
+            MOI.set(model, module_.InitialParameters(), QAOA.fixed_angle_initial_parameters(number_of_layers=1))
+            MOI.set(model, module_.RecordInitialParameters(), false)
+        end;
+        max_iterations=1,
+        number_of_reads=8,
+    )
+    @test !haskey(QUBOTools.metadata(sampleset), "initial_parameters")
 end
 
 @testset "Max-sense objective reporting stays consistent" begin

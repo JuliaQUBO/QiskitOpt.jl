@@ -8,14 +8,17 @@ using ..QiskitOpt:
     default_local_backend,
     empty_metadata,
     preset_pass_manager,
+    qiskit_parameter_names,
     qiskit,
     qiskit_ibm_runtime,
     quadratic_program,
+    random_unit_values,
     runtime_channel,
     runtime_instance,
     sample_bits,
     scipy,
-    numpy
+    numpy,
+    validate_initial_parameters
 
 using QUBO
 MOI = QUBODrivers.MOI
@@ -32,6 +35,8 @@ QUBODrivers.@setup Optimizer begin
         MaximumIterations["max_iter"]::Integer     = 15
         NumberOfReads["num_reads"]::Integer        = 100
         InitialParameters["initial_parameters"]::Union{Vector{Float64}, Nothing} = nothing 
+        InitialParameterSource["initial_parameter_source"]::Union{String, Nothing} = nothing
+        RecordInitialParameters["record_initial_parameters"]::Bool = true
         IBMFakeBackend["ibm_fake_backend"]         = default_local_backend
         IBMBackend["ibm_backend"]::Union{String, Nothing} = nothing
         IsLocal["is_local"]::Bool                  = false
@@ -48,6 +53,69 @@ QUBODrivers.@setup Optimizer begin
         Instance["instance"]::Union{String, Nothing} = nothing
         Ansatz["ansatz"]                           = default_ansatz
     end
+end
+
+function _check_n_variables(n_variables::Integer)
+    n_variables >= 1 || throw(ArgumentError("n_variables must be at least 1"))
+    return Int(n_variables)
+end
+
+function _ansatz_parameter_names(n_variables::Integer, ansatz)
+    num_qubits = _check_n_variables(n_variables)
+    circuit = ansatz(num_qubits=num_qubits)
+    return qiskit_parameter_names(circuit)
+end
+
+"""
+    VQE.parameter_names(; n_variables, ansatz=VQE.default_ansatz)
+
+Return the Qiskit list-binding order for the selected VQE ansatz.
+"""
+function parameter_names(; n_variables::Integer, ansatz = default_ansatz)
+    return _ansatz_parameter_names(n_variables, ansatz)
+end
+
+function parameter_names(n_variables::Integer; ansatz = default_ansatz)
+    return parameter_names(; n_variables=n_variables, ansatz=ansatz)
+end
+
+function parameter_names(sampler::QUBODrivers.AbstractSampler; ansatz = MOI.get(sampler, VQE.Ansatz()))
+    ising_hamiltonian = quadratic_program(sampler)[0]
+    n_variables = pyconvert(Int, ising_hamiltonian.num_qubits)
+    return parameter_names(; n_variables=n_variables, ansatz=ansatz)
+end
+
+"""
+    VQE.parameter_count(; n_variables, ansatz=VQE.default_ansatz)
+
+Return the expected number of VQE initial parameters for the selected ansatz.
+"""
+function parameter_count(; n_variables::Integer, ansatz = default_ansatz)
+    return length(parameter_names(; n_variables=n_variables, ansatz=ansatz))
+end
+
+function parameter_count(n_variables::Integer; ansatz = default_ansatz)
+    return parameter_count(; n_variables=n_variables, ansatz=ansatz)
+end
+
+function parameter_count(sampler::QUBODrivers.AbstractSampler; ansatz = MOI.get(sampler, VQE.Ansatz()))
+    return length(parameter_names(sampler; ansatz=ansatz))
+end
+
+"""
+    VQE.random_initial_parameters(; n_variables, seed=nothing, rng=nothing, ansatz=VQE.default_ansatz)
+
+Return random VQE angles in Qiskit parameter order. Passing `seed` makes
+the returned vector reproducible.
+"""
+function random_initial_parameters(;
+    n_variables::Integer,
+    seed = nothing,
+    rng = nothing,
+    ansatz = default_ansatz,
+)
+    count = parameter_count(; n_variables=n_variables, ansatz=ansatz)
+    return 2π .* random_unit_values(count; seed=seed, rng=rng)
 end
 
 function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
@@ -89,6 +157,8 @@ function retrieve(
     channel         = runtime_channel(MOI.get(sampler, VQE.Channel()))
     instance        = runtime_instance(MOI.get(sampler, VQE.Instance()))
     initial_parameters   = MOI.get(sampler, VQE.InitialParameters())
+    initial_parameter_source = MOI.get(sampler, VQE.InitialParameterSource())
+    record_initial_parameters = MOI.get(sampler, VQE.RecordInitialParameters())
     is_local         = MOI.get(sampler, VQE.IsLocal())
     aer_config = AerBackendConfig(
         method=MOI.get(sampler, VQE.AerBackendMethod()),
@@ -101,6 +171,25 @@ function retrieve(
         seed_simulator=MOI.get(sampler, VQE.AerSeedSimulator()),
         seed_transpiler=MOI.get(sampler, VQE.TranspilerSeed()),
     )
+
+    ising_qp = quadratic_program(sampler)
+    ising_hamiltonian = ising_qp[0]
+    num_qubits = pyconvert(Int, ising_hamiltonian.num_qubits)
+    ansatz = ansatz_instance(num_qubits=num_qubits)
+    parameter_names = qiskit_parameter_names(ansatz)
+    expected_parameter_count = length(parameter_names)
+
+    initial_parameter_values = if isnothing(initial_parameters)
+        zeros(expected_parameter_count)
+    else
+        validate_initial_parameters(initial_parameters, expected_parameter_count, "VQE")
+        Float64.(initial_parameters)
+    end
+    initial_parameter_source = if isnothing(initial_parameter_source)
+        isnothing(initial_parameters) ? "default_zero" : "user"
+    else
+        initial_parameter_source
+    end
 
     @pyexec """
     def cost_function(params, ansatz, hamiltonian, estimator):
@@ -122,11 +211,6 @@ function retrieve(
     execution_mode = backend_selection.execution_mode
     backend_label = backend_name(backend)
 
-    ising_qp = quadratic_program(sampler)
-    ising_hamiltonian = ising_qp[0]
-    num_qubits = pyconvert(Int, ising_hamiltonian.num_qubits)
-    ansatz = ansatz_instance(num_qubits=num_qubits)
-
     pass_manager = preset_pass_manager(
         backend;
         optimization_level=3,
@@ -137,11 +221,7 @@ function retrieve(
     ising_hamiltonian = ising_hamiltonian.apply_layout(layout=ansatz_isa.layout)
 
 
-    if isnothing(initial_parameters)
-        initial_parameters = numpy().zeros(pyint(pyconvert(Int, ansatz_isa.num_parameters)))
-    else
-        initial_parameters = numpy().array(initial_parameters)
-    end
+    initial_parameters = numpy().array(initial_parameter_values)
 
     estimator = qiskit_ibm_runtime().EstimatorV2(mode=backend)
     estimator.options.default_shots = num_reads
@@ -172,6 +252,9 @@ function retrieve(
         backend_config=backend_selection.config,
         backend_config_source=backend_selection.source,
         seed_transpiler=aer_config.seed_transpiler,
+        initial_parameters=record_initial_parameters ? initial_parameter_values : nothing,
+        initial_parameter_names=record_initial_parameters ? parameter_names : nothing,
+        initial_parameter_source=record_initial_parameters ? initial_parameter_source : nothing,
     )
 end
 
