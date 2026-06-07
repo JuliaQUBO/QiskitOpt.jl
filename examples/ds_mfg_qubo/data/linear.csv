@@ -1,0 +1,6 @@
+index,label,role,coefficient,projected_coefficient,repair_source
+1,supply_A,flow,-11.0,1.0,
+2,line_B,flow,-10.8,1.2,
+3,line_C,flow,-13.0,2.0,
+4,aux_supply_A,auxiliary,3.0,0.0,1
+5,aux_line_B,auxiliary,3.0,0.0,2

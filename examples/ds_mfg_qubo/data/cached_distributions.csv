@@ -1,0 +1,13 @@
+algorithm,bitstring,reads,source
+QAOA,11011,52,cached_aer
+QAOA,10110,30,cached_aer
+QAOA,01101,22,cached_aer
+QAOA,10010,12,cached_aer
+QAOA,11010,10,cached_aer
+QAOA,11111,2,cached_aer
+VQE,11011,58,cached_aer
+VQE,10110,24,cached_aer
+VQE,01101,20,cached_aer
+VQE,01001,12,cached_aer
+VQE,11001,10,cached_aer
+VQE,11111,4,cached_aer

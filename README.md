@@ -60,6 +60,20 @@ for i = 1:result_count(model)
 end
 ```
 
+## Maintained Examples
+
+The `examples/ds_mfg_qubo` tutorial is a compact DS-MFG-style workflow that
+loads scalar, linear, and quadratic QUBO CSV data, builds the MOI model, compares
+cached QAOA/VQE sample distributions against a known classical solution pool,
+and writes a distribution SVG without running expensive simulations by default.
+
+```shell
+julia --project=. examples/ds_mfg_qubo/ds_mfg_qubo_qiskitopt.jl
+```
+
+Set `QISKITOPT_DSMFG_RERUN=true` to regenerate the sample distributions through
+local Aer.
+
 ## Runtime Diagnostics
 Use `check_runtime` to verify the Julia/Python bridge and local Qiskit stack before running an optimizer:
 

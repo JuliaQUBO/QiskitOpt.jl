@@ -1,0 +1,4 @@
+rank,flow_bits,aux_bits,full_bits,projected_objective,raw_qubo_energy,match
+1,110,11,11011,2.2,2.2,global_optimum
+2,101,10,10110,3.0,3.0,solution_pool
+3,011,01,01101,3.2,3.2,solution_pool
