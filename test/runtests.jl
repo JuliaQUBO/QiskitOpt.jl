@@ -2,6 +2,8 @@ using Test
 using QiskitOpt
 using QiskitOpt: QAOA, QUBODrivers, QUBOTools, VQE
 
+include(joinpath(@__DIR__, "..", "examples", "ds_mfg_qubo", "DSMFGQUBOExample.jl"))
+
 MOI = QUBODrivers.MOI
 
 const TEST_Q = [
@@ -238,6 +240,49 @@ function expected_maxcut_value(statevector, edges)
     end
 
     return expected_value
+end
+
+@testset "DS-MFG example cached-data smoke" begin
+    base_dir = joinpath(@__DIR__, "..", "examples", "ds_mfg_qubo")
+    instance = DSMFGQUBOExample.load_instance(base_dir)
+
+    @test instance.n_variables == 5
+    @test instance.flow_indices == [1, 2, 3]
+    @test instance.auxiliary_indices == [4, 5]
+    @test DSMFGQUBOExample.qubo_energy(instance, [1, 1, 0, 1, 1]) ≈ 2.2
+    @test DSMFGQUBOExample.projected_objective(instance, [1, 1, 0, 0, 0]) ≈ 2.2
+
+    pool = DSMFGQUBOExample.load_solution_pool(instance, base_dir)
+    observations = DSMFGQUBOExample.load_cached_distributions(base_dir)
+    rows = DSMFGQUBOExample.annotate_distributions(instance, observations, pool)
+
+    @test length(pool) == 3
+    @test length(observations) == 12
+    @test sum(row.reads for row in observations if row.algorithm == "QAOA") == 128
+    @test sum(row.reads for row in observations if row.algorithm == "VQE") == 128
+    @test any(row -> row.algorithm == "QAOA" && row.bitstring == "11011" && row.match == "global_optimum", rows)
+
+    aux_mismatch = only(row for row in rows if row.algorithm == "QAOA" && row.bitstring == "11010")
+    @test aux_mismatch.match == "projection_global_optimum"
+    @test aux_mismatch.raw_qubo_energy > aux_mismatch.repaired_raw_qubo_energy
+    @test aux_mismatch.repaired_bitstring == "11011"
+
+    mktempdir() do dir
+        summary_path = joinpath(dir, "summary.csv")
+        svg_path = joinpath(dir, "distribution.svg")
+        DSMFGQUBOExample.write_distribution_summary_csv(summary_path, rows)
+        DSMFGQUBOExample.write_distribution_svg(svg_path, rows, instance, pool)
+
+        summary = read(summary_path, String)
+        @test occursin("algorithm,bitstring,reads", summary)
+        @test occursin("projection_global_optimum", summary)
+
+        svg = read(svg_path, String)
+        @test occursin("<svg", svg)
+        @test occursin("QAOA", svg)
+        @test occursin("VQE", svg)
+        @test occursin("Raw energy includes QUBO penalties", svg)
+    end
 end
 
 @testset "Runtime diagnostics and lazy imports" begin
