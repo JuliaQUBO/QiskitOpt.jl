@@ -357,11 +357,26 @@ end
     @test options.precision == "single"
     @test options.max_parallel_threads == 2
     @test options.mps_omp_threads == 1
-    @test options.mps_truncation_threshold == 1.0e-6
-    @test options.mps_max_bond_dimension == 32
+    @test options.matrix_product_state_truncation_threshold == 1.0e-6
+    @test options.matrix_product_state_max_bond_dimension == 32
+    @test !(:mps_truncation_threshold in keys(options))
+    @test !(:mps_max_bond_dimension in keys(options))
     @test options.mps_sample_measure_algorithm == "mps_apply_measure"
     @test options.seed_simulator == 1234
     @test !(:seed_transpiler in keys(options))
+
+    smoke_config = QiskitOpt.AerBackendConfig(
+        method="matrix_product_state",
+        precision="single",
+        max_parallel_threads=2,
+        mps_omp_threads=1,
+        mps_truncation_threshold=1.0e-6,
+        mps_max_bond_dimension=32,
+        mps_sample_measure_algorithm="mps_apply_measure",
+        seed_simulator=1234,
+        seed_transpiler=5678,
+    )
+    @test !isnothing(QiskitOpt.local_aer_backend(smoke_config))
 
     metadata = QiskitOpt.empty_metadata(
         "QAOA",
