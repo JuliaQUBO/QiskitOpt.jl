@@ -429,8 +429,16 @@ function aer_backend_options(config::AerBackendConfig)
     _push_option!(options, :precision, config.precision)
     _push_option!(options, :max_parallel_threads, config.max_parallel_threads)
     _push_option!(options, :mps_omp_threads, config.mps_omp_threads)
-    _push_option!(options, :mps_truncation_threshold, config.mps_truncation_threshold)
-    _push_option!(options, :mps_max_bond_dimension, config.mps_max_bond_dimension)
+    _push_option!(
+        options,
+        :matrix_product_state_truncation_threshold,
+        config.mps_truncation_threshold,
+    )
+    _push_option!(
+        options,
+        :matrix_product_state_max_bond_dimension,
+        config.mps_max_bond_dimension,
+    )
     _push_option!(options, :mps_sample_measure_algorithm, config.mps_sample_measure_algorithm)
     _push_option!(options, :seed_simulator, config.seed_simulator)
 
