@@ -547,6 +547,15 @@ end
 
 @testset "Final sampling reads use generic QUBODrivers attribute" begin
     for (optimizer_factory, optimizer_module) in ((QAOA.Optimizer, QAOA), (VQE.Optimizer, VQE))
+        fallback_number_of_reads = 32
+        fallback_sampleset = sample_locally_without_runtime_service(
+            optimizer_factory,
+            optimizer_module;
+            max_iterations=1,
+            number_of_reads=fallback_number_of_reads,
+        )
+        @test sum(QUBOTools.reads(sample) for sample in fallback_sampleset) == fallback_number_of_reads
+
         final_number_of_reads = 48
         sampleset = sample_locally_without_runtime_service(
             optimizer_factory,
