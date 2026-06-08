@@ -353,6 +353,7 @@ end
 
 function _configure_qaoa!(model, instance::QUBOInstance; number_of_reads::Integer, maximum_iterations::Integer)
     MOI.set(model, QAOA.NumberOfReads(), number_of_reads)
+    MOI.set(model, QUBODrivers.FinalNumberOfReads(), number_of_reads)
     MOI.set(model, QAOA.MaximumIterations(), maximum_iterations)
     MOI.set(model, QAOA.NumberOfLayers(), 1)
     MOI.set(model, QAOA.InitialParameters(), QAOA.fixed_angle_initial_parameters(number_of_layers = 1))
@@ -366,6 +367,7 @@ end
 
 function _configure_vqe!(model, instance::QUBOInstance; number_of_reads::Integer, maximum_iterations::Integer)
     MOI.set(model, VQE.NumberOfReads(), number_of_reads)
+    MOI.set(model, QUBODrivers.FinalNumberOfReads(), number_of_reads)
     MOI.set(model, VQE.MaximumIterations(), maximum_iterations)
     MOI.set(model, VQE.InitialParameters(), VQE.random_initial_parameters(n_variables = instance.n_variables, seed = 73001))
     MOI.set(model, VQE.InitialParameterSource(), "random_seed_73001")

@@ -151,6 +151,7 @@ function retrieve(
     # Retrieve Attributes
     max_iter        = MOI.get(sampler, VQE.MaximumIterations())
     num_reads       = MOI.get(sampler, VQE.NumberOfReads())
+    final_num_reads = MOI.get(sampler, QUBODrivers.FinalNumberOfReads())
     ibm_backend     = MOI.get(sampler, VQE.IBMBackend())
     ibm_fake_backend = MOI.get(sampler, VQE.IBMFakeBackend())
     ansatz_instance = MOI.get(sampler, VQE.Ansatz())
@@ -240,7 +241,7 @@ function retrieve(
     optimized_qc = pass_manager.run(qc)
 
     qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-    sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(num_reads)).result()[0]
+    sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(final_num_reads)).result()[0]
     samples = sampling_result.data.meas.get_counts()
 
     callback(result, samples)
