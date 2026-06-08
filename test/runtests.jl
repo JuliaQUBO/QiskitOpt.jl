@@ -3,7 +3,6 @@ using QiskitOpt
 using QiskitOpt: QAOA, QUBODrivers, QUBOTools, VQE
 
 include(joinpath(@__DIR__, "..", "examples", "ds_mfg_qubo", "DSMFGQUBOExample.jl"))
-using .DSMFGQUBOExample
 
 MOI = QUBODrivers.MOI
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env julia
 
 include(joinpath(@__DIR__, "DSMFGQUBOExample.jl"))
-using .DSMFGQUBOExample
 
 function _env_flag(name::AbstractString)
     value = lowercase(get(ENV, name, "false"))
@@ -11,7 +10,7 @@ end
 function main(args = ARGS)
     rerun = _env_flag("QISKITOPT_DSMFG_RERUN") || "--rerun" in args
     output_dir = get(ENV, "QISKITOPT_DSMFG_OUTPUT_DIR", joinpath(@__DIR__, "output"))
-    result = run_example(; base_dir = @__DIR__, output_dir, rerun)
+    result = DSMFGQUBOExample.run_example(; base_dir = @__DIR__, output_dir, rerun)
 
     println("DS-MFG QUBO example")
     println("  source: ", rerun ? "local Aer simulation" : "cached distributions")

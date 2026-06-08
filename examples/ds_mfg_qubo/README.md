@@ -36,6 +36,7 @@ Outputs are written under `examples/ds_mfg_qubo/output/`:
 
 - `distribution_summary.csv`
 - `distribution_comparison.svg`
+- `sample_distributions.csv` when rerun is enabled
 
 ## Rerun Local Aer
 
