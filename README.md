@@ -94,6 +94,9 @@ The local backend check verifies the default Aer backend. Current QAOA/VQE local
 # Number of shots
 set_attribute(model, VQE.NumberOfReads(), 1000) # or QAOA.NumberOfReads
 
+# Optional final sampling shots, separate from optimizer/estimator shots.
+set_attribute(model, QiskitOpt.QUBODrivers.FinalNumberOfReads(), 8192)
+
 # Maximum optimizer iterations
 set_attribute(model, VQE.MaximumIterations(), 100) # or QAOA.MaximumIterations
 

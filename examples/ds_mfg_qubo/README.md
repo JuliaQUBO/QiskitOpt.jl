@@ -52,6 +52,7 @@ parameters, and deterministic simulator/transpiler seeds where supported:
 
 - `QAOA.NumberOfLayers() = 1`
 - `NumberOfReads() = 128`
+- `QUBODrivers.FinalNumberOfReads() = 128`
 - `MaximumIterations() = 10`
 - `AerPrecision() = "single"`
 - `AerMaxParallelThreads() = 1`
@@ -64,6 +65,7 @@ The package test suite includes this module and validates the loader,
 classical objective bookkeeping, cached distributions, and SVG rendering path.
 It does not run the Aer simulation in CI.
 
-Reusable export or objective-bookkeeping APIs should live in lower-level
-packages such as `QUBOTools.jl`, `QUBODrivers.jl`, or `ToQUBO.jl` once those
-interfaces exist. This example keeps only tutorial-specific glue locally.
+Reusable export, objective-bookkeeping, final-read, and reformulation-metadata
+APIs live in lower-level packages such as `QUBOTools.jl`, `QUBODrivers.jl`, and
+`ToQUBO.jl`. This example keeps only tutorial-specific CSV parsing, comparison,
+and SVG rendering glue locally.

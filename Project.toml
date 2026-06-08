@@ -10,4 +10,4 @@ QUBO = "ce8c2e91-a970-4681-856b-16178c24a30c"
 [compat]
 PythonCall = "0.9"
 julia = "1.10"
-QUBO = "0.4, 0.5"
+QUBO = "0.6"
