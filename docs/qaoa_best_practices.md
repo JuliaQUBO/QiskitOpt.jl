@@ -38,7 +38,7 @@ configuration is stable.
 | Local Aer precision | `QiskitOpt.QAOA.AerPrecision()` |
 | Local Aer simulator seed | `QiskitOpt.QAOA.AerSeedSimulator()` |
 | Qiskit transpiler seed | `QiskitOpt.QAOA.TranspilerSeed()` |
-| Aer MPS controls | `AerMPSOmpThreads()`, `AerMPSTruncationThreshold()`, `AerMPSMaxBondDimension()`, `AerMPSSampleMeasureAlgorithm()` |
+| Aer MPS controls | `QiskitOpt.QAOA.AerMPSOmpThreads()`, `QiskitOpt.QAOA.AerMPSTruncationThreshold()`, `QiskitOpt.QAOA.AerMPSMaxBondDimension()`, `QiskitOpt.QAOA.AerMPSSampleMeasureAlgorithm()` |
 | Named IBM backend | `QiskitOpt.QAOA.IBMBackend()` |
 | Local emulation of an IBM backend | `QiskitOpt.QAOA.IBMBackend()` plus `QiskitOpt.QAOA.IsLocal()` |
 | IBM Runtime account selection | `QiskitOpt.QAOA.Channel()` and `QiskitOpt.QAOA.Instance()` |
