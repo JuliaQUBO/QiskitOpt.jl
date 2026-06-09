@@ -74,6 +74,12 @@ julia --project=. examples/ds_mfg_qubo/ds_mfg_qubo_qiskitopt.jl
 Set `QISKITOPT_DSMFG_RERUN=true` to regenerate the sample distributions through
 local Aer.
 
+## Guides
+
+- [QAOA best practices](docs/qaoa_best_practices.md) explains how to start
+  locally with Aer, choose reproducible QAOA initial parameters, record metadata,
+  and move selected runs to IBM hardware.
+
 ## Runtime Diagnostics
 Use `check_runtime` to verify the Julia/Python bridge and local Qiskit stack before running an optimizer:
 
