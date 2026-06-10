@@ -21,7 +21,7 @@ configuration is stable.
    work in an upstream workflow, then pass only the selected backend, seeds, and
    angles into QiskitOpt.jl.
 5. Treat hardware execution as final validation and sampling, not as the first
-   place to tune angles.
+   place to tune angles or train top-tail sample objectives.
 
 ## QiskitOpt.jl Attributes To Set
 
@@ -156,13 +156,21 @@ samples. Broader QAOA research workflows belong upstream:
 | --- | --- |
 | `IBMBackend()`, `IsLocal()`, `IBMFakeBackend()`, Aer attributes, and seeds | Hardware-aware transpilation recipes from `qopt-best-practices` |
 | `InitialParameters()` and `InitialParameterSource()` | MPS, Pauli propagation, parameter-transfer, and schedule-training pipelines |
-| Result metadata for backend configuration, seeds, and starting angles | SAT mapping, SWAP strategies, qubit selection, and CVaR training loops |
+| Result metadata for backend configuration, seeds, and starting angles | SAT mapping, SWAP strategies, qubit selection, and CVaR/top-tail sample-objective training loops |
 
 The adapter boundary is intentional. If a workflow trains angles with
 `qaoa_training_pipeline`, Pauli propagation, MPS, fixed-angle transfer, or a
 hardware-aware mapping strategy, QiskitOpt.jl should receive the final QAOA
 depth, ordered angle vector, backend choice, and reproducibility metadata. It
 should not reimplement those generic QAOA capabilities inside the optimizer.
+
+CVaR and top-tail sample objectives follow the same boundary. The current
+`QAOA.Optimizer` trains parameters with an expected-energy estimator objective,
+then samples the optimized circuit. A CVaR/top-tail training loop would need to
+sample inside the parameter optimizer, choose and document the tail fraction,
+and record training metadata. That is generic QAOA training infrastructure, so
+QiskitOpt.jl documents the recommendation but does not add a package-local
+objective switch or post-processing helper.
 
 The paper behind arXiv:2606.05311 makes the same operational point: approximate
 energy evaluators such as MPS and Pauli propagation can train utility-scale
