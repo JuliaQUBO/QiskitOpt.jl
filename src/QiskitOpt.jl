@@ -666,6 +666,8 @@ function empty_metadata(
     backend_config::Union{AerBackendConfig,Nothing} = nothing,
     backend_config_source::Union{AbstractString,Nothing} = nothing,
     seed_transpiler = nothing,
+    pass_manager_source::Union{AbstractString,Nothing} = nothing,
+    pass_manager_optimization_level::Union{Integer,Nothing} = nothing,
     initial_parameters::Union{AbstractVector,Nothing} = nothing,
     initial_parameter_names::Union{AbstractVector{<:AbstractString},Nothing} = nothing,
     initial_parameter_source::Union{AbstractString,Nothing} = nothing,
@@ -693,6 +695,14 @@ function empty_metadata(
             seed_simulator=seed_simulator,
             seed_transpiler=seed_transpiler,
         )
+    end
+
+    if !isnothing(pass_manager_source)
+        pass_manager_metadata = Dict{String,Any}("source" => String(pass_manager_source))
+        if !isnothing(pass_manager_optimization_level)
+            pass_manager_metadata["optimization_level"] = pass_manager_optimization_level
+        end
+        metadata["pass_manager"] = pass_manager_metadata
     end
 
     if !isnothing(initial_parameters)

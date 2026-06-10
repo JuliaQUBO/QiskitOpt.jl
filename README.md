@@ -184,6 +184,33 @@ set_attribute(
 You can still provide any zero-argument function that returns a Qiskit backend through `IBMFakeBackend()`.
 When `IBMFakeBackend()` is set to an explicit factory, that factory is used as-is and the Aer backend-construction attributes above do not modify it. Use `local_aer_backend_factory(...)` when you want QiskitOpt to retain the factory's Aer configuration in result metadata.
 
+## Custom QAOA Pass Managers
+`QAOA.Optimizer` also accepts an optional pass-manager factory for users who
+want to plug in hardware-aware QAOA transpilation flows from tooling such as
+`qiskit-community/qopt-best-practices` without adding those tools as
+QiskitOpt.jl dependencies. The hook is QAOA-only; VQE continues to use the
+built-in level-3 preset pass manager.
+
+```julia
+function qaoa_pass_manager(backend; optimization_level=3, seed_transpiler=nothing)
+    # Replace this body with a hardware-aware pass-manager recipe from your
+    # Python/Qiskit workflow.
+    return QiskitOpt.preset_pass_manager(
+        backend;
+        optimization_level=optimization_level,
+        seed_transpiler=seed_transpiler,
+    )
+end
+
+set_attribute(model, QiskitOpt.QAOA.PassManagerFactory(), qaoa_pass_manager)
+```
+
+The factory receives the selected backend. QiskitOpt.jl passes
+`optimization_level=3` and `TranspilerSeed()` as `seed_transpiler` when the
+callable accepts those keywords. The returned pass manager is used for both the
+optimization ansatz and the final measured circuit, and result metadata records
+whether QAOA used the default preset path or a custom factory.
+
 ## Choosing a Local Backend
 
 ```julia
