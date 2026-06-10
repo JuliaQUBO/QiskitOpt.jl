@@ -43,6 +43,7 @@ configuration is stable.
 | Local emulation of an IBM backend | `QiskitOpt.QAOA.IBMBackend()` plus `QiskitOpt.QAOA.IsLocal()` |
 | IBM Runtime account selection | `QiskitOpt.QAOA.Channel()` and `QiskitOpt.QAOA.Instance()` |
 | Custom local backend factory | `QiskitOpt.QAOA.IBMFakeBackend()` |
+| Custom QAOA pass-manager factory | `QiskitOpt.QAOA.PassManagerFactory()` |
 
 QiskitOpt.jl defaults to local Aer execution when `IBMBackend()` is unset. The
 default Aer method is `matrix_product_state`, so a first QAOA run does not need
@@ -159,6 +160,42 @@ Keep `AerSeedSimulator()` and `TranspilerSeed()` set while transitioning through
 these stages so metadata can explain differences between local and hardware
 runs.
 
+## Hardware-Aware Pass Managers
+
+For advanced QAOA workflows, `QAOA.PassManagerFactory()` lets you override only
+the QAOA transpilation path while keeping backend selection, parameter
+optimization, sampling, and metadata inside QiskitOpt.jl. This is intended for
+pass-manager recipes developed with upstream tooling such as
+`qiskit-community/qopt-best-practices`; QiskitOpt.jl does not add those tools as
+dependencies.
+
+```julia
+function hardware_aware_qaoa_pass_manager(
+    backend;
+    optimization_level=3,
+    seed_transpiler=nothing,
+)
+    return QiskitOpt.preset_pass_manager(
+        backend;
+        optimization_level=optimization_level,
+        seed_transpiler=seed_transpiler,
+    )
+end
+
+set_attribute(
+    model,
+    QiskitOpt.QAOA.PassManagerFactory(),
+    hardware_aware_qaoa_pass_manager,
+)
+```
+
+The factory receives the selected backend and may accept `optimization_level`
+and `seed_transpiler` keywords. `TranspilerSeed()` is forwarded as
+`seed_transpiler` when the callable supports it. QiskitOpt.jl uses the returned
+pass manager for both the optimization ansatz and the final measured circuit.
+Result metadata records whether QAOA used the default preset pass manager or a
+custom factory. VQE does not expose this QAOA-specific hook.
+
 ## Upstream Boundary
 
 QiskitOpt.jl should remain the JuMP/MOI adapter that sends a QUBO to Qiskit,
@@ -167,7 +204,7 @@ samples. Broader QAOA research workflows belong upstream:
 
 | Belongs in QiskitOpt.jl | Belongs upstream |
 | --- | --- |
-| `IBMBackend()`, `IsLocal()`, `IBMFakeBackend()`, Aer attributes, and seeds | Hardware-aware transpilation recipes from `qopt-best-practices` |
+| `IBMBackend()`, `IsLocal()`, `IBMFakeBackend()`, `PassManagerFactory()`, Aer attributes, and seeds | Hardware-aware transpilation recipe development from `qopt-best-practices` |
 | `InitialParameters()` and `InitialParameterSource()` | MPS, Pauli propagation, parameter-transfer, and schedule-training pipelines |
 | Result metadata for backend configuration, seeds, and starting angles | SAT mapping, SWAP strategies, qubit selection, and CVaR/top-tail sample-objective training loops |
 

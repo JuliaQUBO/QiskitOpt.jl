@@ -596,7 +596,60 @@ end
         @test metadata["initial_parameters"]["source"] == initial_parameter_source
         @test metadata["initial_parameters"]["parameter_names"] == initial_parameter_names
         @test metadata["initial_parameters"]["values"] == initial_parameters
+        if optimizer_module === QAOA
+            @test metadata["pass_manager"]["source"] == "default_preset"
+            @test metadata["pass_manager"]["optimization_level"] == 3
+        else
+            @test !haskey(metadata, "pass_manager")
+        end
     end
+end
+
+@testset "QAOA custom pass-manager factory" begin
+    factory_calls = NamedTuple[]
+    pass_manager_runs = Ref(0)
+
+    function factory(backend; optimization_level=3, seed_transpiler=nothing)
+        push!(
+            factory_calls,
+            (
+                backend=backend,
+                optimization_level=optimization_level,
+                seed_transpiler=seed_transpiler,
+            ),
+        )
+        inner = QiskitOpt.preset_pass_manager(
+            backend;
+            optimization_level=optimization_level,
+            seed_transpiler=seed_transpiler,
+        )
+        return (
+            run = circuit -> begin
+                pass_manager_runs[] += 1
+                return inner.run(circuit)
+            end,
+        )
+    end
+
+    sampleset = sample_locally_without_runtime_service(
+        QAOA.Optimizer,
+        QAOA,
+        (model, module_) -> begin
+            MOI.set(model, module_.PassManagerFactory(), factory)
+            MOI.set(model, module_.TranspilerSeed(), 4321)
+        end;
+        max_iterations=1,
+        number_of_reads=16,
+    )
+    metadata = QUBOTools.metadata(sampleset)
+
+    @test length(factory_calls) == 1
+    @test factory_calls[1].optimization_level == 3
+    @test factory_calls[1].seed_transpiler == 4321
+    @test pass_manager_runs[] == 2
+    @test metadata["pass_manager"]["source"] == "custom_factory"
+    @test metadata["pass_manager"]["optimization_level"] == 3
+    @test !isdefined(VQE, :PassManagerFactory)
 end
 
 @testset "Final sampling reads use generic QUBODrivers attribute" begin

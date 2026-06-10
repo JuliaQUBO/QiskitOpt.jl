@@ -64,6 +64,7 @@ QUBODrivers.@setup Optimizer begin
         AerMPSSampleMeasureAlgorithm["aer_mps_sample_measure_algorithm"]::Union{String, Nothing} = nothing
         AerSeedSimulator["aer_seed_simulator"]::Union{Integer, Nothing} = nothing
         TranspilerSeed["transpiler_seed"]::Union{Integer, Nothing} = nothing
+        PassManagerFactory["pass_manager_factory"] = nothing
         Channel["channel"]::Union{String, Nothing} = nothing
         Instance["instance"]::Union{String, Nothing} = nothing
     end
@@ -96,6 +97,87 @@ function _fixed_angle_record(number_of_layers::Integer, family::Symbol)
     end
 
     return _WURTZ_LYKOV_3REGULAR_TREE_ANGLES[p]
+end
+
+function _pass_manager_factory_signature_mismatch(err, factory)
+    return err isa MethodError &&
+        (
+            (
+                err.f === Core.kwcall &&
+                length(err.args) >= 2 &&
+                err.args[2] === factory
+            ) ||
+            err.f === factory
+        )
+end
+
+function _try_pass_manager_factory(call::Function, factory)
+    try
+        return (pass_manager = call(), matched = true)
+    catch err
+        _pass_manager_factory_signature_mismatch(err, factory) || rethrow()
+        return (pass_manager = nothing, matched = false)
+    end
+end
+
+function _custom_pass_manager(
+    factory,
+    backend;
+    optimization_level::Integer,
+    seed_transpiler,
+)
+    attempts = (
+        () -> factory(
+            backend;
+            optimization_level=optimization_level,
+            seed_transpiler=seed_transpiler,
+        ),
+        () -> factory(backend; optimization_level=optimization_level),
+        () -> factory(backend; seed_transpiler=seed_transpiler),
+        () -> factory(backend),
+    )
+
+    for attempt in attempts
+        result = _try_pass_manager_factory(attempt, factory)
+        result.matched && return result.pass_manager
+    end
+
+    throw(
+        ArgumentError(
+            "QAOA.PassManagerFactory must accept the selected backend and may " *
+            "optionally accept optimization_level and seed_transpiler keywords",
+        ),
+    )
+end
+
+function _selected_pass_manager(
+    backend;
+    factory = nothing,
+    optimization_level::Integer = 3,
+    seed_transpiler = nothing,
+)
+    if isnothing(factory)
+        return (
+            pass_manager = preset_pass_manager(
+                backend;
+                optimization_level=optimization_level,
+                seed_transpiler=seed_transpiler,
+            ),
+            source = "default_preset",
+            optimization_level = optimization_level,
+        )
+    end
+
+    return (
+        pass_manager = _custom_pass_manager(
+            factory,
+            backend;
+            optimization_level=optimization_level,
+            seed_transpiler=seed_transpiler,
+        ),
+        source = "custom_factory",
+        optimization_level = optimization_level,
+    )
 end
 
 """
@@ -295,6 +377,7 @@ function retrieve(
     initial_parameter_source = MOI.get(sampler, QAOA.InitialParameterSource())
     record_initial_parameters = MOI.get(sampler, QAOA.RecordInitialParameters())
     is_local         = MOI.get(sampler, QAOA.IsLocal())
+    pass_manager_factory = MOI.get(sampler, QAOA.PassManagerFactory())
     aer_config = AerBackendConfig(
         method=MOI.get(sampler, QAOA.AerBackendMethod()),
         precision=MOI.get(sampler, QAOA.AerPrecision()),
@@ -348,11 +431,13 @@ function retrieve(
     execution_mode = backend_selection.execution_mode
     backend_label = backend_name(backend)
 
-    pass_manager = preset_pass_manager(
+    pass_manager_selection = _selected_pass_manager(
         backend;
+        factory=pass_manager_factory,
         optimization_level=3,
         seed_transpiler=aer_config.seed_transpiler,
     )
+    pass_manager = pass_manager_selection.pass_manager
     
     ansatz_isa = pass_manager.run(ansatz)
     ising_hamiltonian = ising_hamiltonian.apply_layout(layout=ansatz_isa.layout)
@@ -389,6 +474,8 @@ function retrieve(
         backend_config=backend_selection.config,
         backend_config_source=backend_selection.source,
         seed_transpiler=aer_config.seed_transpiler,
+        pass_manager_source=pass_manager_selection.source,
+        pass_manager_optimization_level=pass_manager_selection.optimization_level,
         initial_parameters=record_initial_parameters ? initial_parameter_values : nothing,
         initial_parameter_names=record_initial_parameters ? parameter_names : nothing,
         initial_parameter_source=record_initial_parameters ? initial_parameter_source : nothing,
