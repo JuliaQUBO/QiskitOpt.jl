@@ -80,9 +80,10 @@ The available choices are:
 - Fixed Wurtz-Lykov angles. Use
   `QiskitOpt.QAOA.fixed_angle_initial_parameters(...)` for the built-in
   3-regular tree table, and record `QiskitOpt.QAOA.FIXED_ANGLE_SOURCE`.
-- Schedule-based starts. The schedule helpers tracked in issue
-  [#34](https://github.com/JuliaQUBO/QiskitOpt.jl/issues/34) should produce a
-  Qiskit-ordered vector that is passed through `InitialParameters()` with a
+- Schedule-based starts. Use
+  `QiskitOpt.QAOA.linear_ramp_initial_parameters(...)`,
+  `QiskitOpt.QAOA.tqa_initial_parameters(...)`, or
+  `QiskitOpt.QAOA.interpolated_initial_parameters(...)`, then record a
   descriptive `InitialParameterSource()`.
 
 ```julia
@@ -109,6 +110,18 @@ set_attribute(
     QiskitOpt.QAOA.InitialParameterSource(),
     QiskitOpt.QAOA.FIXED_ANGLE_SOURCE,
 )
+```
+
+```julia
+schedule_start = QiskitOpt.QAOA.linear_ramp_initial_parameters(
+    number_of_layers=p,
+    delta_beta=0.35,
+    delta_gamma=0.75,
+    gamma_sign=-1,
+)
+set_attribute(model, QiskitOpt.QAOA.NumberOfLayers(), p)
+set_attribute(model, QiskitOpt.QAOA.InitialParameters(), schedule_start)
+set_attribute(model, QiskitOpt.QAOA.InitialParameterSource(), "linear_ramp_arxiv_2606_05311")
 ```
 
 The returned `SampleSet` metadata records `metadata["initial_parameters"]` with

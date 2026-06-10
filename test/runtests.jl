@@ -426,6 +426,45 @@ end
     @test_throws ArgumentError QAOA.fixed_angle_initial_parameters(number_of_layers=6)
     @test_throws ArgumentError QAOA.fixed_angle_guarantee(number_of_layers=6)
 
+    @test QAOA.linear_ramp_initial_parameters(number_of_layers=4) ≈ [
+        0.35,
+        0.2625,
+        0.175,
+        0.0875,
+        -0.1875,
+        -0.375,
+        -0.5625,
+        -0.75,
+    ]
+    @test QAOA.linear_ramp_initial_parameters(
+        number_of_layers=3;
+        delta_beta=0.6,
+        delta_gamma=1.2,
+        gamma_sign=1,
+    ) ≈ [0.6, 0.4, 0.2, 0.4, 0.8, 1.2]
+
+    @test QAOA.tqa_initial_parameters(number_of_layers=3) ≈ [0.5, 0.25, 0.0, -0.25, -0.5, -0.75]
+    @test QAOA.tqa_initial_parameters(number_of_layers=4; delta_t=0.8, gamma_sign=1) ≈ [
+        0.6,
+        0.4,
+        0.2,
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+    ]
+
+    prior_qaoa_parameters = [0.2, 0.4, -0.6, -1.0]
+    @test QAOA.interpolated_initial_parameters(prior_qaoa_parameters) ≈ [0.2, 0.3, 0.4, -0.6, -0.8, -1.0]
+    @test QAOA.interpolated_initial_parameters(prior_qaoa_parameters; gamma_sign=-1) ≈ [0.2, 0.3, 0.4, 0.6, 0.8, 1.0]
+
+    @test_throws ArgumentError QAOA.linear_ramp_initial_parameters(number_of_layers=0)
+    @test_throws ArgumentError QAOA.tqa_initial_parameters(number_of_layers=0)
+    @test_throws ArgumentError QAOA.interpolated_initial_parameters(Float64[])
+    @test_throws ArgumentError QAOA.interpolated_initial_parameters([1.0, 2.0, 3.0])
+    @test_throws ArgumentError QAOA.interpolated_initial_parameters(Any[1.0, "not-real"])
+
     qaoa_cost_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
         ("ZI", 1.0),
         ("IZ", 1.0),

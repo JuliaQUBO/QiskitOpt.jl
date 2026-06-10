@@ -158,6 +158,73 @@ function random_initial_parameters(; number_of_layers::Integer, seed = nothing, 
 end
 
 """
+    QAOA.linear_ramp_initial_parameters(; number_of_layers, delta_beta=0.35, delta_gamma=0.75, gamma_sign=-1)
+
+Return Linear Ramp QAOA angles in Qiskit's list-binding order.
+"""
+function linear_ramp_initial_parameters(;
+    number_of_layers::Integer,
+    delta_beta::Real = 0.35,
+    delta_gamma::Real = 0.75,
+    gamma_sign::Real = -1,
+)
+    p = _check_number_of_layers(number_of_layers)
+    beta = [delta_beta * (1 - i / p) for i in 0:(p - 1)]
+    gamma = [gamma_sign * delta_gamma * ((i + 1) / p) for i in 0:(p - 1)]
+    return Float64[v for v in vcat(beta, gamma)]
+end
+
+"""
+    QAOA.tqa_initial_parameters(; number_of_layers, delta_t=0.75, gamma_sign=-1)
+
+Return Trotterized Quantum Annealing QAOA angles in Qiskit's list-binding order.
+"""
+function tqa_initial_parameters(;
+    number_of_layers::Integer,
+    delta_t::Real = 0.75,
+    gamma_sign::Real = -1,
+)
+    p = _check_number_of_layers(number_of_layers)
+    beta = [delta_t * (1 - i / p) for i in 1:p]
+    gamma = [gamma_sign * delta_t * (i / p) for i in 1:p]
+    return Float64[v for v in vcat(beta, gamma)]
+end
+
+function _interpolate_to_next_depth(values::AbstractVector{<:Real})
+    p = length(values)
+    interpolated = Vector{Float64}(undef, p + 1)
+    for i in 1:(p + 1)
+        left = i == 1 ? 0.0 : Float64(values[i - 1])
+        right = i == p + 1 ? 0.0 : Float64(values[i])
+        interpolated[i] = ((i - 1) / p) * left + ((p - i + 1) / p) * right
+    end
+    return interpolated
+end
+
+"""
+    QAOA.interpolated_initial_parameters(previous_parameters; gamma_sign=1)
+
+Convert a depth-`p` Qiskit-ordered QAOA parameter vector into a depth-`p + 1`
+vector by linearly interpolating the beta and gamma blocks separately.
+"""
+function interpolated_initial_parameters(
+    previous_parameters::AbstractVector;
+    gamma_sign::Real = 1,
+)
+    count = length(previous_parameters)
+    count >= 2 || throw(ArgumentError("previous_parameters must contain beta and gamma blocks for at least one layer"))
+    iseven(count) || throw(ArgumentError("previous_parameters length must be even"))
+    all(parameter -> parameter isa Real, previous_parameters) ||
+        throw(ArgumentError("previous_parameters must contain real values"))
+
+    p = div(count, 2)
+    numeric_parameters = Float64.(previous_parameters)
+    beta = _interpolate_to_next_depth(numeric_parameters[1:p])
+    gamma = _interpolate_to_next_depth(numeric_parameters[(p + 1):end])
+    return Float64[v for v in vcat(beta, gamma_sign .* gamma)]
+end
+
+"""
     QAOA.fixed_angle_guarantee(; number_of_layers, family=:wurtz_lykov_3regular_tree)
 
 Return the approximation-ratio guarantee reported with the built-in fixed-angle
