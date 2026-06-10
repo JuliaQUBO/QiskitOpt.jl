@@ -130,6 +130,10 @@ qaoa_guarantee = QiskitOpt.QAOA.fixed_angle_guarantee(number_of_layers=2)
 set_attribute(model, QiskitOpt.QAOA.NumberOfLayers(), 2)
 set_attribute(model, QiskitOpt.QAOA.InitialParameters(), qaoa_start)
 set_attribute(model, QiskitOpt.QAOA.InitialParameterSource(), QiskitOpt.QAOA.FIXED_ANGLE_SOURCE)
+
+schedule_start = QiskitOpt.QAOA.linear_ramp_initial_parameters(number_of_layers=2)
+set_attribute(model, QiskitOpt.QAOA.InitialParameters(), schedule_start)
+set_attribute(model, QiskitOpt.QAOA.InitialParameterSource(), "linear_ramp_arxiv_2606_05311")
 ```
 
 ```julia
