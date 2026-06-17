@@ -382,15 +382,36 @@ end
         "QAOA",
         "aer_simulator",
         "local";
+        backend_version="0.17.0",
         backend_config=custom_config,
         backend_config_source="aer_attributes",
+        number_of_reads=48,
+        optimizer_iterations=2,
+        optimizer_evaluations=3,
+        optimizer_number_of_reads=16,
         seed_transpiler=5678,
     )
+    metadata["time"]["effective"] = 1.0e-6
+    metadata["time"]["total"] = 2.0e-6
+    @test QUBODrivers.validate_metadata(metadata) == String[]
+    @test metadata["algorithm"]["name"] == "QAOA"
+    @test metadata["backend"]["name"] == "aer_simulator"
+    @test metadata["backend"]["version"] == "0.17.0"
+    @test metadata["execution"]["mode"] == "local"
+    @test metadata["reads"]["number_of_reads"] == 48
+    @test metadata["reads"]["final_number_of_reads"] == 48
+    @test metadata["optimizer"]["iterations"] == 2
+    @test metadata["optimizer"]["evaluations"] == 3
+    @test metadata["optimizer"]["number_of_reads"] == 16
     @test metadata["backend_configuration"]["source"] == "aer_attributes"
     @test metadata["backend_configuration"]["method"] == "statevector"
     @test metadata["backend_configuration"]["precision"] == "single"
     @test metadata["seeds"]["simulator"] == 1234
     @test metadata["seeds"]["transpiler"] == 5678
+    @test metadata["seeds"]["optimizer"] === nothing
+
+    @test QiskitOpt.effective_seed(nothing, 73001, 1) == QiskitOpt.derived_seed(73001, 1)
+    @test QiskitOpt.effective_seed(999, 73001, 1) == 999
 
     opaque_metadata = QiskitOpt.empty_metadata(
         "QAOA",
@@ -569,6 +590,7 @@ end
             VQE.parameter_names(n_variables=3)
         end
         initial_parameter_source = optimizer_module === QAOA ? QAOA.FIXED_ANGLE_SOURCE : "random_seed_73001"
+        number_of_reads = 16
 
         sampleset = sample_locally_without_runtime_service(
             optimizer_factory,
@@ -582,11 +604,23 @@ end
                 MOI.set(model, module_.InitialParameterSource(), initial_parameter_source)
             end;
             max_iterations=1,
-            number_of_reads=16,
+            number_of_reads=number_of_reads,
         )
         metadata = QUBOTools.metadata(sampleset)
         @test startswith(metadata["origin"], "$(algorithm) @ ")
         @test metadata["execution_mode"] == "local"
+        @test metadata["execution"]["mode"] == "local"
+        @test metadata["algorithm"]["name"] == algorithm
+        @test metadata["backend"] isa Dict{String,Any}
+        @test metadata["backend"]["name"] isa String
+        @test haskey(metadata["backend"], "version")
+        @test metadata["reads"]["number_of_reads"] == number_of_reads
+        @test metadata["reads"]["final_number_of_reads"] == number_of_reads
+        @test metadata["optimizer"]["number_of_reads"] == number_of_reads
+        @test metadata["optimizer"]["evaluations"] isa Union{Integer,Nothing}
+        @test metadata["time"]["effective"] > 0
+        @test metadata["time"]["total"] > 0
+        @test QUBODrivers.validate_metadata(metadata) == String[]
         @test metadata["backend_configuration"]["source"] == "aer_attributes"
         @test metadata["backend_configuration"]["method"] == "matrix_product_state"
         @test metadata["backend_configuration"]["precision"] == "single"
@@ -602,6 +636,33 @@ end
         else
             @test !haskey(metadata, "pass_manager")
         end
+    end
+end
+
+@testset "Standard QUBODrivers RandomSeed is recorded and overridden explicitly" begin
+    for (optimizer_factory, optimizer_module) in ((QAOA.Optimizer, QAOA), (VQE.Optimizer, VQE))
+        sampler = optimizer_factory()
+        @test MOI.supports(sampler, QUBODrivers.RandomSeed())
+        @test QUBODrivers.supports_seed(typeof(sampler))
+        MOI.set(sampler, QUBODrivers.RandomSeed(), 73001)
+        @test MOI.get(sampler, QUBODrivers.RandomSeed()) == 73001
+
+        sampleset = sample_locally_without_runtime_service(
+            optimizer_factory,
+            optimizer_module,
+            (model, module_) -> begin
+                MOI.set(model, QUBODrivers.RandomSeed(), 73001)
+                MOI.set(model, module_.AerSeedSimulator(), 1234)
+                MOI.set(model, module_.TranspilerSeed(), 5678)
+            end;
+            max_iterations=1,
+            number_of_reads=8,
+        )
+        metadata = QUBOTools.metadata(sampleset)
+
+        @test metadata["seeds"]["sampler"] == 73001
+        @test metadata["seeds"]["simulator"] == 1234
+        @test metadata["seeds"]["transpiler"] == 5678
     end
 end
 

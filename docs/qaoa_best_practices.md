@@ -34,6 +34,7 @@ configuration is stable.
 | Initial angle values | `QiskitOpt.QAOA.InitialParameters()` |
 | Initial angle provenance | `QiskitOpt.QAOA.InitialParameterSource()` |
 | Initial metadata recording | `QiskitOpt.QAOA.RecordInitialParameters()` |
+| Standard benchmark seed | `QiskitOpt.QUBODrivers.RandomSeed()` |
 | Local Aer method | `QiskitOpt.QAOA.AerBackendMethod()` |
 | Local Aer precision | `QiskitOpt.QAOA.AerPrecision()` |
 | Local Aer simulator seed | `QiskitOpt.QAOA.AerSeedSimulator()` |
@@ -60,10 +61,16 @@ set_attribute(model, QiskitOpt.QAOA.NumberOfReads(), 1024)
 set_attribute(model, QiskitOpt.QUBODrivers.FinalNumberOfReads(), 8192)
 set_attribute(model, QiskitOpt.QAOA.MaximumIterations(), 100)
 
+set_attribute(model, QiskitOpt.QUBODrivers.RandomSeed(), 73001)
 set_attribute(model, QiskitOpt.QAOA.AerBackendMethod(), "matrix_product_state")
 set_attribute(model, QiskitOpt.QAOA.AerSeedSimulator(), 73001)
 set_attribute(model, QiskitOpt.QAOA.TranspilerSeed(), 73001)
 ```
+
+`QUBODrivers.RandomSeed()` is the benchmark-facing seed. If
+`AerSeedSimulator()` or `TranspilerSeed()` is unset, QiskitOpt derives that
+Qiskit-specific seed deterministically from the standard seed. Explicit
+QiskitOpt seed attributes still take precedence.
 
 ## Initial Parameters
 
