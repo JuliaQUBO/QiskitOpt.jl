@@ -551,6 +551,49 @@ function backend_name(backend)
     end
 end
 
+function python_type_module(object)
+    try
+        return PythonCall.pyconvert(
+            String,
+            getproperty(getproperty(object, :__class__), :__module__),
+        )
+    catch
+        return nothing
+    end
+end
+
+function is_qiskit_aer_backend(backend)
+    module_name = python_type_module(backend)
+    return !isnothing(module_name) && startswith(module_name, "qiskit_aer")
+end
+
+function backend_version(backend)
+    if is_qiskit_aer_backend(backend)
+        aer_version = _python_module_version(qiskit_aer())
+        !isnothing(aer_version) && return aer_version
+    end
+
+    for property in (:backend_version, :version)
+        try
+            return PythonCall.pyconvert(String, PythonCall.pystr(getproperty(backend, property)))
+        catch
+        end
+    end
+
+    return nothing
+end
+
+function execution_status(execution_mode::AbstractString)
+    mode = String(execution_mode)
+    if mode == "local"
+        return "locally_solved"
+    elseif mode == "cloud"
+        return "cloud_solved"
+    end
+
+    return "$(mode)_solved"
+end
+
 function sample_bits(key)
     bitstring = replace(PythonCall.pyconvert(String, key), " " => "")
     return reverse(Int[(digit == '1') for digit in bitstring])
@@ -570,13 +613,18 @@ function aer_backend_metadata(config::AerBackendConfig, source::AbstractString)
 end
 
 function seed_metadata(;
+    seed_sampler = nothing,
     seed_simulator = nothing,
     seed_transpiler = nothing,
+    seed_optimizer = nothing,
 )
-    return Dict{String,Any}(
+    seeds = Dict{String,Any}(
         "simulator" => seed_simulator,
         "transpiler" => seed_transpiler,
+        "optimizer" => seed_optimizer,
     )
+    isnothing(seed_sampler) || (seeds["sampler"] = seed_sampler)
+    return seeds
 end
 
 function _seed_state(seed::Integer)
@@ -622,6 +670,31 @@ function random_unit_values(count::Integer; seed = nothing, rng = nothing)
     return rand(Float64, count)
 end
 
+function derived_seed(seed::Union{Integer,Nothing}, stream::Integer)
+    isnothing(seed) && return nothing
+    stream >= 1 || throw(ArgumentError("seed stream must be at least 1"))
+
+    state = _seed_state(seed)
+    value = UInt64(0)
+    for _ in 1:stream
+        state, value = _splitmix64_next(state)
+    end
+
+    return Int(mod(BigInt(value), BigInt(typemax(Int32))))
+end
+
+function effective_seed(explicit_seed, sampler_seed::Union{Integer,Nothing}, stream::Integer)
+    return isnothing(explicit_seed) ? derived_seed(sampler_seed, stream) : explicit_seed
+end
+
+function python_int_property(object, name::Symbol)
+    try
+        return PythonCall.pyconvert(Int, getproperty(object, name))
+    catch
+        return nothing
+    end
+end
+
 function qiskit_parameter_names(circuit)
     return String[
         PythonCall.pyconvert(String, PythonCall.pystr(parameter))
@@ -663,9 +736,17 @@ function empty_metadata(
     algorithm::AbstractString,
     backend::AbstractString,
     execution_mode::AbstractString;
+    backend_version = nothing,
     backend_config::Union{AerBackendConfig,Nothing} = nothing,
     backend_config_source::Union{AbstractString,Nothing} = nothing,
+    number_of_reads::Union{Integer,Nothing} = nothing,
+    final_number_of_reads::Union{Integer,Nothing} = number_of_reads,
+    optimizer_iterations = nothing,
+    optimizer_evaluations = nothing,
+    optimizer_number_of_reads = nothing,
+    seed_sampler = nothing,
     seed_transpiler = nothing,
+    seed_optimizer = nothing,
     pass_manager_source::Union{AbstractString,Nothing} = nothing,
     pass_manager_optimization_level::Union{Integer,Nothing} = nothing,
     initial_parameters::Union{AbstractVector,Nothing} = nothing,
@@ -674,10 +755,36 @@ function empty_metadata(
 )
     metadata = Dict{String,Any}(
         "origin" => "$(algorithm) @ $(backend)",
-        "backend" => backend,
+        "algorithm" => Dict{String,Any}(
+            "name" => String(algorithm),
+        ),
+        "backend_name" => String(backend),
+        "backend" => Dict{String,Any}(
+            "name" => String(backend),
+            "version" => backend_version,
+        ),
+        "execution" => Dict{String,Any}(
+            "mode" => String(execution_mode),
+        ),
         "execution_mode" => execution_mode,
+        "optimizer" => Dict{String,Any}(
+            "iterations" => optimizer_iterations,
+            "evaluations" => optimizer_evaluations,
+            "number_of_reads" => optimizer_number_of_reads,
+        ),
+        "reads" => Dict{String,Any}(
+            "number_of_reads" => final_number_of_reads,
+            "final_number_of_reads" => final_number_of_reads,
+        ),
         "time" => Dict{String,Any}(),
         "evals" => Float64[],
+        "seeds" => seed_metadata(
+            seed_sampler=seed_sampler,
+            seed_simulator=isnothing(backend_config) ? nothing : backend_config.seed_simulator,
+            seed_transpiler=seed_transpiler,
+            seed_optimizer=seed_optimizer,
+        ),
+        "status" => execution_status(execution_mode),
     )
 
     if !isnothing(backend_config) || !isnothing(backend_config_source)
@@ -687,14 +794,6 @@ function empty_metadata(
         else
             aer_backend_metadata(backend_config, source)
         end
-    end
-
-    if !isnothing(backend_config) || !isnothing(seed_transpiler)
-        seed_simulator = isnothing(backend_config) ? nothing : backend_config.seed_simulator
-        metadata["seeds"] = seed_metadata(
-            seed_simulator=seed_simulator,
-            seed_transpiler=seed_transpiler,
-        )
     end
 
     if !isnothing(pass_manager_source)

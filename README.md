@@ -107,6 +107,10 @@ set_attribute(model, QiskitOpt.QUBODrivers.FinalNumberOfReads(), 8192)
 # Maximum optimizer iterations
 set_attribute(model, VQE.MaximumIterations(), 100) # or QAOA.MaximumIterations
 
+# Standard benchmark seed. When algorithm-specific seeds are unset, QiskitOpt
+# deterministically derives the local Aer and transpiler seeds from this value.
+set_attribute(model, QiskitOpt.QUBODrivers.RandomSeed(), 73001)
+
 # Ansatz
 set_attribute(model, VQE.Ansatz(), QiskitOpt.qiskit.circuit.library.EfficientSU2)
 
@@ -167,7 +171,13 @@ set_attribute(model, QAOA.AerSeedSimulator(), 73001)
 set_attribute(model, QAOA.TranspilerSeed(), 73001)
 ```
 
-The returned `SampleSet` metadata records the selected backend configuration and simulator/transpiler seeds. If you need complete control, the existing backend-factory override remains available:
+The returned `SampleSet` metadata records the selected backend configuration,
+standard sampler seed, derived or explicit simulator/transpiler seeds, final
+read count, optimizer iteration/evaluation counts, and structured backend
+name/version under `metadata["backend"]`. A scalar `metadata["backend_name"]`
+alias is also recorded for scripts that only need the backend label. If you
+need complete control, the existing backend-factory override remains
+available:
 
 ```julia
 set_attribute(

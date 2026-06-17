@@ -4,10 +4,13 @@ using PythonCall: pyconvert, pylist, pydict, pyint, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
+    backend_version,
     configured_execution_backend,
     default_local_backend,
+    effective_seed,
     empty_metadata,
     preset_pass_manager,
+    python_int_property,
     qiskit_parameter_names,
     qiskit,
     qiskit_ibm_runtime,
@@ -34,6 +37,7 @@ QUBODrivers.@setup Optimizer begin
     attributes = begin
         MaximumIterations["max_iter"]::Integer     = 15
         NumberOfReads["num_reads"]::Integer        = 100
+        RandomSeed["seed"]::Union{Integer, Nothing} = nothing
         InitialParameters["initial_parameters"]::Union{Vector{Float64}, Nothing} = nothing 
         InitialParameterSource["initial_parameter_source"]::Union{String, Nothing} = nothing
         RecordInitialParameters["record_initial_parameters"]::Bool = true
@@ -54,6 +58,8 @@ QUBODrivers.@setup Optimizer begin
         Ansatz["ansatz"]                           = default_ansatz
     end
 end
+
+QUBODrivers.honors_final_reads(::Type{<:Optimizer}) = true
 
 function _check_n_variables(n_variables::Integer)
     n_variables >= 1 || throw(ArgumentError("n_variables must be at least 1"))
@@ -126,7 +132,7 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Results vector
     samples = QUBOTools.Sample{T,Int}[]
 
-    metadata = retrieve(sampler) do _, sample_results
+    retrieve_results = @timed retrieve(sampler) do _, sample_results
         for key in sample_results.keys()
             state = sample_bits(key)
             objective_value = QUBOTools.value(state, L, Q, α, β)
@@ -140,6 +146,8 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
 
         return nothing
     end
+    metadata = retrieve_results.value
+    metadata["time"]["effective"] = retrieve_results.time
 
     return SampleSet{T}(samples, metadata)
 end
@@ -152,6 +160,7 @@ function retrieve(
     max_iter        = MOI.get(sampler, VQE.MaximumIterations())
     num_reads       = MOI.get(sampler, VQE.NumberOfReads())
     final_num_reads = MOI.get(sampler, QUBODrivers.FinalNumberOfReads())
+    sampler_seed    = MOI.get(sampler, QUBODrivers.RandomSeed())
     ibm_backend     = MOI.get(sampler, VQE.IBMBackend())
     ibm_fake_backend = MOI.get(sampler, VQE.IBMFakeBackend())
     ansatz_instance = MOI.get(sampler, VQE.Ansatz())
@@ -161,6 +170,8 @@ function retrieve(
     initial_parameter_source = MOI.get(sampler, VQE.InitialParameterSource())
     record_initial_parameters = MOI.get(sampler, VQE.RecordInitialParameters())
     is_local         = MOI.get(sampler, VQE.IsLocal())
+    seed_simulator = effective_seed(MOI.get(sampler, VQE.AerSeedSimulator()), sampler_seed, 1)
+    seed_transpiler = effective_seed(MOI.get(sampler, VQE.TranspilerSeed()), sampler_seed, 2)
     aer_config = AerBackendConfig(
         method=MOI.get(sampler, VQE.AerBackendMethod()),
         precision=MOI.get(sampler, VQE.AerPrecision()),
@@ -169,8 +180,8 @@ function retrieve(
         mps_truncation_threshold=MOI.get(sampler, VQE.AerMPSTruncationThreshold()),
         mps_max_bond_dimension=MOI.get(sampler, VQE.AerMPSMaxBondDimension()),
         mps_sample_measure_algorithm=MOI.get(sampler, VQE.AerMPSSampleMeasureAlgorithm()),
-        seed_simulator=MOI.get(sampler, VQE.AerSeedSimulator()),
-        seed_transpiler=MOI.get(sampler, VQE.TranspilerSeed()),
+        seed_simulator=seed_simulator,
+        seed_transpiler=seed_transpiler,
     )
 
     ising_qp = quadratic_program(sampler)
@@ -211,6 +222,7 @@ function retrieve(
     backend = backend_selection.backend
     execution_mode = backend_selection.execution_mode
     backend_label = backend_name(backend)
+    backend_release = backend_version(backend)
 
     pass_manager = preset_pass_manager(
         backend;
@@ -250,9 +262,17 @@ function retrieve(
         "VQE",
         backend_label,
         execution_mode;
+        backend_version=backend_release,
         backend_config=backend_selection.config,
         backend_config_source=backend_selection.source,
+        number_of_reads=final_num_reads,
+        final_number_of_reads=final_num_reads,
+        optimizer_iterations=python_int_property(result, :nit),
+        optimizer_evaluations=python_int_property(result, :nfev),
+        optimizer_number_of_reads=num_reads,
+        seed_sampler=sampler_seed,
         seed_transpiler=aer_config.seed_transpiler,
+        seed_optimizer=nothing,
         initial_parameters=record_initial_parameters ? initial_parameter_values : nothing,
         initial_parameter_names=record_initial_parameters ? parameter_names : nothing,
         initial_parameter_source=record_initial_parameters ? initial_parameter_source : nothing,
