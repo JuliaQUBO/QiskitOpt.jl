@@ -173,8 +173,10 @@ set_attribute(model, QAOA.TranspilerSeed(), 73001)
 
 The returned `SampleSet` metadata records the selected backend configuration,
 standard sampler seed, derived or explicit simulator/transpiler seeds, final
-read count, optimizer iteration/evaluation counts, and backend name/version. If
-you need complete control, the existing backend-factory override remains
+read count, optimizer iteration/evaluation counts, and structured backend
+name/version under `metadata["backend"]`. A scalar `metadata["backend_name"]`
+alias is also recorded for scripts that only need the backend label. If you
+need complete control, the existing backend-factory override remains
 available:
 
 ```julia

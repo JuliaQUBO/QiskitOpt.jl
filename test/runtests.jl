@@ -377,6 +377,9 @@ end
         seed_transpiler=5678,
     )
     @test !isnothing(QiskitOpt.local_aer_backend(smoke_config))
+    @test QiskitOpt.backend_version(QiskitOpt.default_local_backend()) ==
+          QiskitOpt._python_module_version(QiskitOpt.qiskit_aer())
+    @test QiskitOpt.backend_version(QiskitOpt.default_local_backend()) != "2"
 
     metadata = QiskitOpt.empty_metadata(
         "QAOA",
@@ -395,9 +398,11 @@ end
     metadata["time"]["total"] = 2.0e-6
     @test QUBODrivers.validate_metadata(metadata) == String[]
     @test metadata["algorithm"]["name"] == "QAOA"
+    @test metadata["backend_name"] == "aer_simulator"
     @test metadata["backend"]["name"] == "aer_simulator"
     @test metadata["backend"]["version"] == "0.17.0"
     @test metadata["execution"]["mode"] == "local"
+    @test metadata["status"] == "locally_solved"
     @test metadata["reads"]["number_of_reads"] == 48
     @test metadata["reads"]["final_number_of_reads"] == 48
     @test metadata["optimizer"]["iterations"] == 2
@@ -426,6 +431,12 @@ end
     @test !haskey(opaque_metadata["backend_configuration"], "method")
     @test opaque_metadata["seeds"]["simulator"] === nothing
     @test opaque_metadata["seeds"]["transpiler"] == 5678
+
+    cloud_metadata = QiskitOpt.empty_metadata("QAOA", "ibm_backend", "cloud"; number_of_reads=48)
+    cloud_metadata["time"]["effective"] = 1.0e-6
+    cloud_metadata["time"]["total"] = 2.0e-6
+    @test QUBODrivers.validate_metadata(cloud_metadata) == String[]
+    @test cloud_metadata["status"] == "cloud_solved"
 
     factory = QiskitOpt.local_aer_backend_factory(custom_config)
     @test factory.config.seed_simulator == 1234
@@ -611,6 +622,7 @@ end
         @test metadata["execution_mode"] == "local"
         @test metadata["execution"]["mode"] == "local"
         @test metadata["algorithm"]["name"] == algorithm
+        @test metadata["backend_name"] == metadata["backend"]["name"]
         @test metadata["backend"] isa Dict{String,Any}
         @test metadata["backend"]["name"] isa String
         @test haskey(metadata["backend"], "version")

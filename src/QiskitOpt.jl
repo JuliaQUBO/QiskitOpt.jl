@@ -551,8 +551,29 @@ function backend_name(backend)
     end
 end
 
+function python_type_module(object)
+    try
+        return PythonCall.pyconvert(
+            String,
+            getproperty(getproperty(object, :__class__), :__module__),
+        )
+    catch
+        return nothing
+    end
+end
+
+function is_qiskit_aer_backend(backend)
+    module_name = python_type_module(backend)
+    return !isnothing(module_name) && startswith(module_name, "qiskit_aer")
+end
+
 function backend_version(backend)
-    for property in (:version, :backend_version)
+    if is_qiskit_aer_backend(backend)
+        aer_version = _python_module_version(qiskit_aer())
+        !isnothing(aer_version) && return aer_version
+    end
+
+    for property in (:backend_version, :version)
         try
             return PythonCall.pyconvert(String, PythonCall.pystr(getproperty(backend, property)))
         catch
@@ -560,6 +581,17 @@ function backend_version(backend)
     end
 
     return nothing
+end
+
+function execution_status(execution_mode::AbstractString)
+    mode = String(execution_mode)
+    if mode == "local"
+        return "locally_solved"
+    elseif mode == "cloud"
+        return "cloud_solved"
+    end
+
+    return "$(mode)_solved"
 end
 
 function sample_bits(key)
@@ -726,6 +758,7 @@ function empty_metadata(
         "algorithm" => Dict{String,Any}(
             "name" => String(algorithm),
         ),
+        "backend_name" => String(backend),
         "backend" => Dict{String,Any}(
             "name" => String(backend),
             "version" => backend_version,
@@ -751,7 +784,7 @@ function empty_metadata(
             seed_transpiler=seed_transpiler,
             seed_optimizer=seed_optimizer,
         ),
-        "status" => "locally_solved",
+        "status" => execution_status(execution_mode),
     )
 
     if !isnothing(backend_config) || !isnothing(backend_config_source)
