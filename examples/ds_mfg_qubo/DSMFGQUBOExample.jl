@@ -352,14 +352,18 @@ function annotate_distributions(
 end
 
 function _configure_qaoa!(model, instance::QUBOInstance; number_of_reads::Integer, maximum_iterations::Integer)
+    # Keep optimizer and final shots equal for this cached tutorial.
     MOI.set(model, QAOA.NumberOfReads(), number_of_reads)
     MOI.set(model, QUBODrivers.FinalNumberOfReads(), number_of_reads)
     MOI.set(model, QAOA.MaximumIterations(), maximum_iterations)
+    # One layer keeps the compact tutorial cheap to rerun locally.
     MOI.set(model, QAOA.NumberOfLayers(), 1)
+    # Record fixed-angle provenance through InitialParameterSource().
     MOI.set(model, QAOA.InitialParameters(), QAOA.fixed_angle_initial_parameters(number_of_layers = 1))
     MOI.set(model, QAOA.InitialParameterSource(), QAOA.FIXED_ANGLE_SOURCE)
     MOI.set(model, QAOA.AerPrecision(), "single")
     MOI.set(model, QAOA.AerMaxParallelThreads(), 1)
+    # Pin local Aer and transpiler seeds for comparable regenerated samples.
     MOI.set(model, QAOA.AerSeedSimulator(), 73001)
     MOI.set(model, QAOA.TranspilerSeed(), 73001)
     return model
