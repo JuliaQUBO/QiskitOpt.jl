@@ -335,6 +335,8 @@ function _fixed_parameter_metadata(
             "input_order" => String(parameter_order),
             "qiskit_order" => "beta_then_gamma",
             "parameter_names" => String.(parameter_names),
+            "values_order" => "qiskit_order",
+            "values_aligned_to" => "parameter_names",
             "values" => Float64.(parameter_values),
         ),
         "variables" => Dict{String,Any}(
@@ -397,7 +399,9 @@ QUBODrivers sampler and bind an explicit QAOA parameter vector without running
 then all gamma angles. Pass `parameter_order=:gamma_then_beta` to provide the
 opposite block order. The returned metadata records variable order, count-key
 bit order, parameter order, objective scale/offset, objective sign convention,
-and backend-independent circuit properties.
+and backend-independent circuit properties. Metadata parameter `values` are
+always stored in Qiskit binding order and align positionally with
+`parameter_names`; `input_order` records the caller's input format.
 """
 function fixed_parameter_circuit(
     source::MOI.ModelLike;

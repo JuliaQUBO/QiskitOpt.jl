@@ -158,7 +158,11 @@ circuit, metadata = QiskitOpt.QAOA.fixed_parameter_circuit(
 The metadata is intended to travel with exported circuits. It records variable
 order, Qiskit count-key order, QAOA parameter order, objective scale/offset,
 objective sign convention, and backend-independent circuit size information.
-Use `QiskitOpt.QAOA.count_key_bits(key)` to convert Qiskit count keys back to
+Parameter values stored in metadata always align with Qiskit parameter names,
+regardless of the caller's input order. Store caller-specific angle provenance,
+such as source path, training target, seed, or expected probabilities, alongside
+the returned metadata when you need it. Use
+`QiskitOpt.QAOA.count_key_bits(key)` to convert Qiskit count keys back to
 `[x1, x2, ...]` before scoring with `QUBOTools.value`.
 
 ## Moving From Aer To IBM Hardware

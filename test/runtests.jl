@@ -594,6 +594,8 @@ end
     @test metadata["parameters"]["input_order"] == "beta_then_gamma"
     @test metadata["parameters"]["qiskit_order"] == "beta_then_gamma"
     @test metadata["parameters"]["parameter_names"] == ["β[0]", "γ[0]"]
+    @test metadata["parameters"]["values_order"] == "qiskit_order"
+    @test metadata["parameters"]["values_aligned_to"] == "parameter_names"
     @test metadata["parameters"]["values"] == parameters
     @test metadata["variables"]["order"] == ["1", "2"]
     @test metadata["measurement"]["enabled"]
@@ -604,6 +606,23 @@ end
     @test metadata["circuit"]["num_qubits"] == 2
     @test metadata["circuit"]["num_clbits"] == 2
     @test metadata["circuit"]["operations"]["measure"] == 2
+
+    max_model, _ = build_model(
+        QAOA.Optimizer;
+        Q=[
+            -1.0 2.0
+            2.0 -1.0
+        ],
+        sense=:Max,
+    )
+    _, max_metadata = QAOA.fixed_parameter_circuit(
+        max_model;
+        parameters=parameters,
+        reps=1,
+        measure=false,
+    )
+    @test max_metadata["objective"]["sense"] == "max"
+    @test max_metadata["objective"]["qiskit_minimization_sign"] == -1
 
     unmeasured = circuit.remove_final_measurements(inplace=false)
     exported_probabilities = QiskitOpt.PythonCall.pyconvert(
@@ -654,6 +673,8 @@ end
         QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(reordered_circuit).probabilities_dict(),
     )
     @test reordered_metadata["parameters"]["input_order"] == "gamma_then_beta"
+    @test reordered_metadata["parameters"]["values_order"] == "qiskit_order"
+    @test reordered_metadata["parameters"]["values_aligned_to"] == "parameter_names"
     @test reordered_metadata["parameters"]["values"] == parameters
     @test Set(keys(reordered_probabilities)) == Set(keys(exported_probabilities))
     for key in keys(exported_probabilities)

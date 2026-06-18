@@ -176,8 +176,11 @@ circuit, metadata = QiskitOpt.QAOA.fixed_parameter_circuit(
 
 The metadata records QAOA depth, Qiskit parameter names and binding order,
 variable order, Qiskit count-key bit order, objective scale/offset, objective
-sign convention, and backend-independent circuit properties. Convert a Qiskit
-count key back to QUBO variable order with:
+sign convention, and backend-independent circuit properties. Parameter values
+stored in metadata always align with the Qiskit parameter names, regardless of
+the input order. Store caller-specific angle provenance, such as training seed
+or source path, alongside the returned metadata when you need it. Convert a
+Qiskit count key back to QUBO variable order with:
 
 ```julia
 bits = QiskitOpt.QAOA.count_key_bits("0101")
