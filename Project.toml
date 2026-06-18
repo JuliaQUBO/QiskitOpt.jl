@@ -1,7 +1,7 @@
 name = "QiskitOpt"
 uuid = "81b20daf-e62b-4502-a0d1-aa084de80e33"
 authors = ["pedromxavier <pedroxavier@psr-inc.com>", "pedroripper <pedroripper@psr-inc.com>", "bernalde <dbernaln@purdue.edu>"]
-version = "0.5.0"
+version = "0.6.0"
 
 [deps]
 PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
