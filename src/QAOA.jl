@@ -1,6 +1,6 @@
 module QAOA
 
-using PythonCall: pyconvert, pylist, pydict, pyint, @pyexec
+using PythonCall: pyconvert, pylist, pydict, pyint, pystr, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
@@ -17,7 +17,9 @@ using ..QiskitOpt:
     quadratic_program,
     random_unit_values,
     runtime_channel,
+    runtime_service,
     runtime_instance,
+    runtime_token,
     sample_bits,
     scipy,
     numpy,
@@ -29,6 +31,15 @@ Sample = QUBODrivers.Sample
 SampleSet = QUBODrivers.SampleSet
 
 const FIXED_ANGLE_SOURCE = "Wurtz-Lykov 3-regular tree fixed-angle table; arXiv:2107.00677"
+const _HANDOFF_METADATA_SECTIONS = (
+    "algorithm",
+    "qaoa",
+    "parameters",
+    "variables",
+    "measurement",
+    "objective",
+    "circuit",
+)
 
 const _WURTZ_LYKOV_3REGULAR_TREE_ANGLES = Dict(
     1 => (gamma = [0.616], beta = [0.393], guarantee = 0.6925),
@@ -363,6 +374,298 @@ function _fixed_parameter_metadata(
             "depth" => pyconvert(Int, circuit.depth()),
             "operations" => _circuit_operation_counts(circuit),
         ),
+    )
+end
+
+function _check_runtime_backend(backend::AbstractString)
+    backend_name = strip(String(backend))
+    isempty(backend_name) && throw(ArgumentError("backend must be a non-empty IBM backend name"))
+    return backend_name
+end
+
+function _check_runtime_shots(shots::Integer)
+    shots >= 1 || throw(ArgumentError("shots must be at least 1"))
+    return Int(shots)
+end
+
+function _check_optimization_level(optimization_level::Integer)
+    0 <= optimization_level <= 3 ||
+        throw(ArgumentError("optimization_level must be between 0 and 3"))
+    return Int(optimization_level)
+end
+
+function _check_transpiler_seed(seed::Union{Integer,Nothing})
+    isnothing(seed) && return nothing
+    return Int(seed)
+end
+
+function _check_measured_circuit(circuit)
+    try
+        pyconvert(Int, circuit.num_clbits) >= 1 && return nothing
+    catch err
+        err isa ArgumentError && rethrow()
+        throw(ArgumentError("circuit must expose Qiskit num_clbits"))
+    end
+
+    throw(
+        ArgumentError(
+            "ibm_runtime_handoff expects a measured circuit; call " *
+            "QAOA.fixed_parameter_circuit(...; measure=true)",
+        ),
+    )
+end
+
+function _safe_fixed_parameter_metadata(fixed_metadata)
+    isnothing(fixed_metadata) && return Dict{String,Any}()
+
+    metadata = Dict{String,Any}()
+    for key in _HANDOFF_METADATA_SECTIONS
+        haskey(fixed_metadata, key) || continue
+        metadata[key] = deepcopy(fixed_metadata[key])
+    end
+    return metadata
+end
+
+function _julia_package_version()
+    try
+        version = Base.pkgversion(parentmodule(@__MODULE__))
+        return isnothing(version) ? nothing : string(version)
+    catch
+        return nothing
+    end
+end
+
+function _python_package_version(lazy_module)
+    try
+        loaded = lazy_module()
+        return pyconvert(String, loaded.__version__)
+    catch
+        return nothing
+    end
+end
+
+function _runtime_handoff_package_versions()
+    return Dict{String,Any}(
+        "QiskitOpt" => _julia_package_version(),
+        "qiskit" => _python_package_version(qiskit),
+        "qiskit_ibm_runtime" => _python_package_version(qiskit_ibm_runtime),
+    )
+end
+
+function _runtime_handoff_metadata(;
+    fixed_metadata,
+    backend::AbstractString,
+    shots::Integer,
+    transpiler_seed::Union{Integer,Nothing},
+    optimization_level::Integer,
+    dry_run::Bool,
+    channel::Union{Nothing,AbstractString},
+    instance::Union{Nothing,AbstractString},
+)
+    resolved_channel = runtime_channel(channel)
+    resolved_instance = runtime_instance(instance)
+
+    return Dict{String,Any}(
+        "runtime_handoff" => Dict{String,Any}(
+            "mode" => dry_run ? "dry_run" : "live",
+            "status" => dry_run ? "dry_run" : "preparing_submission",
+            "backend" => String(backend),
+            "shots" => Int(shots),
+            "optimization_level" => Int(optimization_level),
+            "transpiler_seed" => transpiler_seed,
+            "channel" => resolved_channel,
+            "instance_configured" => !isnothing(resolved_instance),
+            "credentials_recorded" => false,
+            "credential_fields_omitted" => ["token", "instance", "account_file", "crn"],
+            "instance_hint" =>
+                "QISKIT_IBM_INSTANCE or QAOA.Instance() may be required even when a token is present",
+        ),
+        "fixed_parameter_circuit" => _safe_fixed_parameter_metadata(fixed_metadata),
+        "count_scoring" => Dict{String,Any}(
+            "count_key_order" =>
+                "Qiskit count keys print classical bits from highest to lowest index",
+            "bit_conversion" => "QAOA.count_key_bits",
+            "value_convention" =>
+                "QUBOTools.value(bits, linear, quadratic, scale, offset)",
+        ),
+        "packages" => _runtime_handoff_package_versions(),
+    )
+end
+
+function _transpile_for_runtime(circuit, backend; optimization_level::Integer, transpiler_seed)
+    if isnothing(transpiler_seed)
+        return qiskit().transpile(
+            circuit;
+            backend=backend,
+            optimization_level=optimization_level,
+        )
+    end
+
+    return qiskit().transpile(
+        circuit;
+        backend=backend,
+        seed_transpiler=transpiler_seed,
+        optimization_level=optimization_level,
+    )
+end
+
+function _python_call_string(object, name::Symbol)
+    try
+        value = getproperty(object, name)
+        try
+            value = value()
+        catch
+        end
+        return pyconvert(String, pystr(value))
+    catch
+        return nothing
+    end
+end
+
+function _redact_runtime_message(message::AbstractString, secrets)
+    redacted = String(message)
+    for secret in secrets
+        isnothing(secret) && continue
+        secret_text = String(secret)
+        isempty(secret_text) && continue
+        redacted = replace(redacted, secret_text => "[redacted]")
+    end
+
+    redacted = replace(redacted, r"(?i)(token\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)(instance\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)(account[_ -]?file\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)\bcrn:[^\s,;]+" => "[redacted]")
+    return redacted
+end
+
+"""
+    QAOA.RuntimeHandoffError
+
+Failure type thrown by `QAOA.ibm_runtime_handoff(...; dry_run=false)` when the
+live Runtime setup, transpilation, or submission path fails before a successful
+job is returned.
+
+Catch this exception when a workflow needs to persist the sanitized failure
+metadata. The `metadata` field contains the same handoff metadata shape returned
+by dry runs, with `metadata["runtime_handoff"]["status"] ==
+"failed_before_submission"` and a sanitized failure message. The `cause` field
+contains the original exception object.
+"""
+struct RuntimeHandoffError <: Exception
+    metadata::Dict{String,Any}
+    cause::Any
+end
+
+function Base.showerror(io::IO, err::RuntimeHandoffError)
+    print(io, "IBM Runtime handoff failed before a successful job submission")
+    failure = get(get(err.metadata, "runtime_handoff", Dict{String,Any}()), "failure", nothing)
+    if failure isa AbstractDict && haskey(failure, "message")
+        print(io, ": ", failure["message"])
+    else
+        print(io, ": ")
+        showerror(io, err.cause)
+    end
+end
+
+"""
+    QAOA.ibm_runtime_handoff(circuit; fixed_metadata=nothing, backend, shots, dry_run=true, transpiler_seed=nothing, optimization_level=3, channel=nothing, instance=nothing)
+
+Prepare a fixed-parameter QAOA circuit for IBM Runtime `SamplerV2`.
+
+The default `dry_run=true` path does not contact IBM Runtime. It returns
+sanitized metadata describing the intended backend, shots, transpiler seed,
+fixed-circuit parameter metadata, count-key scoring convention, package
+versions, and whether an instance selector was configured. Token values,
+instance/CRN values, and account file paths are never recorded.
+
+Set `dry_run=false` to resolve the backend through `QiskitRuntimeService`,
+transpile the measured circuit, and submit it to `qiskit_ibm_runtime.SamplerV2`.
+Live submission reads credentials from normal Qiskit Runtime configuration and
+returns the submitted job object plus the same sanitized metadata with job
+status fields populated.
+
+If live setup, transpilation, or submission fails before a successful job is
+returned, this throws `QAOA.RuntimeHandoffError`. Catch it and read
+`err.metadata` to persist sanitized failure metadata before rethrowing or
+stopping the workflow. Failure-message redaction is best effort: it removes
+QiskitOpt-resolved token and instance values plus obvious `token=...`,
+`instance=...`, `account_file=...`, and `crn:...` fragments from the captured
+message, but callers should still keep Runtime credentials outside project
+artifacts and avoid logging raw upstream exceptions.
+"""
+function ibm_runtime_handoff(
+    circuit;
+    fixed_metadata = nothing,
+    backend::AbstractString,
+    shots::Integer,
+    dry_run::Bool = true,
+    transpiler_seed::Union{Integer,Nothing} = nothing,
+    optimization_level::Integer = 3,
+    channel::Union{Nothing,AbstractString} = nothing,
+    instance::Union{Nothing,AbstractString} = nothing,
+)
+    _check_measured_circuit(circuit)
+    backend_label = _check_runtime_backend(backend)
+    shot_count = _check_runtime_shots(shots)
+    checked_seed = _check_transpiler_seed(transpiler_seed)
+    checked_optimization_level = _check_optimization_level(optimization_level)
+
+    metadata = _runtime_handoff_metadata(
+        fixed_metadata=fixed_metadata,
+        backend=backend_label,
+        shots=shot_count,
+        transpiler_seed=checked_seed,
+        optimization_level=checked_optimization_level,
+        dry_run=dry_run,
+        channel=channel,
+        instance=instance,
+    )
+
+    if dry_run
+        return (
+            metadata=metadata,
+            transpiled_circuit=nothing,
+            job=nothing,
+        )
+    end
+
+    service = runtime_backend = transpiled_circuit = job = nothing
+    try
+        service = runtime_service(channel=channel, instance=instance)
+        runtime_backend = service.backend(backend_label)
+        transpiled_circuit = _transpile_for_runtime(
+            circuit,
+            runtime_backend;
+            optimization_level=checked_optimization_level,
+            transpiler_seed=checked_seed,
+        )
+        sampler = qiskit_ibm_runtime().SamplerV2(mode=runtime_backend)
+        job = sampler.run(pylist([transpiled_circuit]), shots=pyint(shot_count))
+    catch err
+        handoff = metadata["runtime_handoff"]
+        handoff["status"] = "failed_before_submission"
+        handoff["failure"] = Dict{String,Any}(
+            "message" => _redact_runtime_message(
+                sprint(showerror, err),
+                (runtime_token(), runtime_instance(instance)),
+            ),
+            "instance_hint" =>
+                "QISKIT_IBM_INSTANCE or QAOA.Instance() may be required when Runtime cannot auto-resolve an account instance",
+        )
+        throw(RuntimeHandoffError(metadata, err))
+    end
+
+    handoff = metadata["runtime_handoff"]
+    handoff["status"] = "submitted"
+    handoff["job"] = Dict{String,Any}(
+        "id" => _python_call_string(job, :job_id),
+        "status" => _python_call_string(job, :status),
+    )
+
+    return (
+        metadata=metadata,
+        transpiled_circuit=transpiled_circuit,
+        job=job,
     )
 end
 
