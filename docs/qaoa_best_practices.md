@@ -320,7 +320,24 @@ custom factory. VQE does not expose this QAOA-specific hook.
 
 QiskitOpt.jl should remain the JuMP/MOI adapter that sends a QUBO to Qiskit,
 selects the execution backend, records seeds and angle metadata, and returns
-samples. Broader QAOA research workflows belong upstream:
+samples. Broader QAOA research workflows belong upstream. Track any proposed
+upstream follow-up from
+[QiskitOpt.jl#38](https://github.com/JuliaQUBO/QiskitOpt.jl/issues/38) before
+opening an issue or pull request in another repository:
+
+| Upstream home | Follow-up candidate | Current triage |
+| --- | --- | --- |
+| [`qopt-best-practices`](https://github.com/qiskit-community/qopt-best-practices) | Hardware-aware QAOA pass-manager examples, SWAP/SAT/qubit-selection integration notes, and Runtime execution examples. | No issue is needed from the DS-MFG pilot alone; it uses a conventional backend transpile call with fixed `seed_transpiler` and explicit Runtime submission. |
+| [`qaoa_training_pipeline`](https://github.com/qiskit-community/qaoa_training_pipeline) | Angle schedule export, parameter interchange, MPS or Pauli-propagation training guidance, and reusable angle databases. | Possible future candidate only if fixed-angle parameter interchange recurs outside QiskitOpt.jl. Record target, depth, angle-search seed, iteration count, `parameter_order`, and expected probabilities. |
+| [`qiskit-optimization`](https://github.com/qiskit-community/qiskit-optimization) | QUBO or `QuadraticProgram` conversion gaps. | No issue is needed unless a concrete conversion mismatch is found; DS-MFG fixed-circuit reconstruction matched stored fixed-angle probabilities. |
+
+QiskitOpt-specific adapter work stays in this repository. Fixed QAOA circuit
+construction, Qiskit parameter order, bit order, adapter metadata, and the
+QiskitOpt-facing Runtime handoff are local concerns, not upstream QAOA training
+or hardware-mapping issues. QUBODrivers sampler shape and benchmark metadata
+belong in the QUBO.jl ecosystem.
+
+The code boundary is:
 
 | Belongs in QiskitOpt.jl | Belongs upstream |
 | --- | --- |
