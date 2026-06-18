@@ -204,6 +204,30 @@ job = live_handoff.job
 job_id = live_handoff.metadata["runtime_handoff"]["job"]["id"]
 ```
 
+If live setup, transpilation, or submission fails before a job is returned,
+catch `QiskitOpt.QAOA.RuntimeHandoffError` and persist `err.metadata` before
+stopping or rethrowing:
+
+```julia
+try
+    live_handoff = QiskitOpt.QAOA.ibm_runtime_handoff(
+        circuit;
+        fixed_metadata=metadata,
+        backend="ibm_fez",
+        shots=8192,
+        transpiler_seed=73001,
+        dry_run=false,
+    )
+catch err
+    if err isa QiskitOpt.QAOA.RuntimeHandoffError
+        failure_metadata = err.metadata
+        original_error = err.cause
+        rethrow()
+    end
+    rethrow()
+end
+```
+
 The live path resolves the named backend with `QiskitRuntimeService`,
 transpiles the measured circuit with the requested seed and optimization level,
 then submits it through `qiskit_ibm_runtime.SamplerV2`. Credentials should come
@@ -216,6 +240,11 @@ the Runtime failure can look like:
 ```text
 IBMInputValueError: No matching instances found for the following filters: .
 ```
+
+Failure-message redaction removes QiskitOpt-resolved token and instance values
+plus obvious `token=...`, `instance=...`, `account_file=...`, and `crn:...`
+fragments from captured errors. Treat that as a final guardrail, not a reason to
+store credentials in project outputs.
 
 Treat returned counts as Qiskit count keys. Convert keys with
 `QiskitOpt.QAOA.count_key_bits(key)`, then score them with the linear,

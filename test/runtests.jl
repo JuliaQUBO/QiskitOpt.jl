@@ -654,6 +654,45 @@ end
             @test !occursin("secret-token-issue-45", handoff_text)
             @test !occursin("secret-instance-issue-45", handoff_text)
             @test !occursin("/tmp/secret-account.json", handoff_text)
+
+            saved_account_token = "saved-account-token-issue-45"
+            secret_crn = "secret-crn-issue-45"
+            QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error(
+                "auth failed token=$(saved_account_token) " *
+                "instance=secret-instance-issue-45 " *
+                "account_file=/tmp/secret-account.json " *
+                "crn:$(secret_crn)",
+            )
+
+            runtime_error = try
+                QAOA.ibm_runtime_handoff(
+                    circuit;
+                    fixed_metadata=unsafe_metadata,
+                    backend="ibm_fez",
+                    shots=4096,
+                    transpiler_seed=73001,
+                    dry_run=false,
+                )
+                nothing
+            catch err
+                err
+            end
+
+            @test runtime_error isa QAOA.RuntimeHandoffError
+            @test runtime_error.cause !== nothing
+            @test runtime_error.metadata["runtime_handoff"]["status"] == "failed_before_submission"
+            failure_message = runtime_error.metadata["runtime_handoff"]["failure"]["message"]
+            @test occursin("[redacted]", failure_message)
+            for secret in (
+                saved_account_token,
+                "secret-instance-issue-45",
+                "/tmp/secret-account.json",
+                secret_crn,
+            )
+                @test !occursin(secret, failure_message)
+                @test !occursin(secret, repr(runtime_error.metadata))
+                @test !occursin(secret, sprint(showerror, runtime_error))
+            end
         end
     finally
         QiskitOpt._runtime_service_builder[] = previous_builder

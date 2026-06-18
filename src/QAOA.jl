@@ -530,9 +530,27 @@ function _redact_runtime_message(message::AbstractString, secrets)
         isempty(secret_text) && continue
         redacted = replace(redacted, secret_text => "[redacted]")
     end
+
+    redacted = replace(redacted, r"(?i)(token\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)(instance\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)(account[_ -]?file\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)\bcrn:[^\s,;]+" => "[redacted]")
     return redacted
 end
 
+"""
+    QAOA.RuntimeHandoffError
+
+Failure type thrown by `QAOA.ibm_runtime_handoff(...; dry_run=false)` when the
+live Runtime setup, transpilation, or submission path fails before a successful
+job is returned.
+
+Catch this exception when a workflow needs to persist the sanitized failure
+metadata. The `metadata` field contains the same handoff metadata shape returned
+by dry runs, with `metadata["runtime_handoff"]["status"] ==
+"failed_before_submission"` and a sanitized failure message. The `cause` field
+contains the original exception object.
+"""
 struct RuntimeHandoffError <: Exception
     metadata::Dict{String,Any}
     cause::Any
@@ -565,6 +583,15 @@ transpile the measured circuit, and submit it to `qiskit_ibm_runtime.SamplerV2`.
 Live submission reads credentials from normal Qiskit Runtime configuration and
 returns the submitted job object plus the same sanitized metadata with job
 status fields populated.
+
+If live setup, transpilation, or submission fails before a successful job is
+returned, this throws `QAOA.RuntimeHandoffError`. Catch it and read
+`err.metadata` to persist sanitized failure metadata before rethrowing or
+stopping the workflow. Failure-message redaction is best effort: it removes
+QiskitOpt-resolved token and instance values plus obvious `token=...`,
+`instance=...`, `account_file=...`, and `crn:...` fragments from the captured
+message, but callers should still keep Runtime credentials outside project
+artifacts and avoid logging raw upstream exceptions.
 """
 function ibm_runtime_handoff(
     circuit;

@@ -213,8 +213,14 @@ live_handoff = QiskitOpt.QAOA.ibm_runtime_handoff(
 Runtime credentials remain outside QiskitOpt artifacts and are read through the
 normal Qiskit Runtime account flow or environment variables. Set
 `QISKIT_IBM_INSTANCE` or pass `instance=...` when Runtime cannot auto-resolve an
-account instance; this may be required even when a token is present. Convert a
-Qiskit count key back to QUBO variable order with:
+account instance; this may be required even when a token is present. If live
+setup, transpilation, or submission fails before a job is returned, catch
+`QiskitOpt.QAOA.RuntimeHandoffError` and persist `err.metadata`; `err.cause`
+retains the original exception. Failure-message redaction removes
+QiskitOpt-resolved token and instance values plus obvious `token=...`,
+`instance=...`, `account_file=...`, and `crn:...` fragments, but callers should
+still keep Runtime credentials outside project artifacts. Convert a Qiskit
+count key back to QUBO variable order with:
 
 ```julia
 bits = QiskitOpt.QAOA.count_key_bits("0101")
