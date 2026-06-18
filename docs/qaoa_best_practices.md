@@ -320,10 +320,11 @@ custom factory. VQE does not expose this QAOA-specific hook.
 
 QiskitOpt.jl should remain the JuMP/MOI adapter that sends a QUBO to Qiskit,
 selects the execution backend, records seeds and angle metadata, and returns
-samples. Broader QAOA research workflows belong upstream. Track any proposed
-upstream follow-up from
-[QiskitOpt.jl#38](https://github.com/JuliaQUBO/QiskitOpt.jl/issues/38) before
-opening an issue or pull request in another repository:
+samples. Broader QAOA research workflows belong upstream. The upstream triage
+for this guide is recorded in
+[QiskitOpt.jl#38](https://github.com/JuliaQUBO/QiskitOpt.jl/issues/38). Open a
+new QiskitOpt.jl issue before filing any future upstream follow-up so the
+candidate, rationale, and owning repository are explicit:
 
 | Upstream home | Follow-up candidate | Current triage |
 | --- | --- | --- |
