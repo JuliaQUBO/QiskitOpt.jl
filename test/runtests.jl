@@ -566,6 +566,128 @@ end
     @test vqe_seeded != VQE.random_initial_parameters(n_variables=3; seed=73002)
 end
 
+@testset "Fixed-parameter QAOA circuit export" begin
+    model, _ = build_model(
+        QAOA.Optimizer;
+        Q=[
+            -1.0 2.0
+            2.0 -1.0
+        ],
+        L=[0.5, -0.25],
+        scale=2.0,
+        offset=1.5,
+    )
+    qaoa_sampler = QAOA._fixed_parameter_sampler(model)
+    n, linear, quadratic, qubo_scale, qubo_offset = QUBOTools.qubo(qaoa_sampler, :dense)
+    @test n == 2
+
+    parameters = [0.23, -0.41]
+    circuit, metadata = QAOA.fixed_parameter_circuit(
+        model;
+        parameters=parameters,
+        reps=1,
+        measure=true,
+    )
+
+    @test metadata["algorithm"]["mode"] == "fixed_parameter_circuit"
+    @test metadata["qaoa"]["number_of_layers"] == 1
+    @test metadata["parameters"]["input_order"] == "beta_then_gamma"
+    @test metadata["parameters"]["qiskit_order"] == "beta_then_gamma"
+    @test metadata["parameters"]["parameter_names"] == ["β[0]", "γ[0]"]
+    @test metadata["parameters"]["values"] == parameters
+    @test metadata["variables"]["order"] == ["1", "2"]
+    @test metadata["measurement"]["enabled"]
+    @test metadata["objective"]["sense"] == "min"
+    @test metadata["objective"]["scale"] == qubo_scale
+    @test metadata["objective"]["offset"] == qubo_offset
+    @test metadata["objective"]["qiskit_minimization_sign"] == 1
+    @test metadata["circuit"]["num_qubits"] == 2
+    @test metadata["circuit"]["num_clbits"] == 2
+    @test metadata["circuit"]["operations"]["measure"] == 2
+
+    unmeasured = circuit.remove_final_measurements(inplace=false)
+    exported_probabilities = QiskitOpt.PythonCall.pyconvert(
+        Dict{String,Float64},
+        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(unmeasured).probabilities_dict(),
+    )
+
+    reference = QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
+        QiskitOpt.quadratic_program(qaoa_sampler)[0],
+        reps=1,
+    ).assign_parameters(QiskitOpt.numpy().array(parameters))
+    reference_probabilities = QiskitOpt.PythonCall.pyconvert(
+        Dict{String,Float64},
+        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(reference).probabilities_dict(),
+    )
+
+    @test Set(keys(exported_probabilities)) == Set(keys(reference_probabilities))
+    for key in keys(reference_probabilities)
+        @test exported_probabilities[key] ≈ reference_probabilities[key]
+    end
+
+    uniform_circuit, uniform_metadata = QAOA.fixed_parameter_circuit(
+        model;
+        parameters=[0.0, 0.0],
+        reps=1,
+        measure=false,
+    )
+    uniform_probabilities = QiskitOpt.PythonCall.pyconvert(
+        Dict{String,Float64},
+        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(uniform_circuit).probabilities_dict(),
+    )
+    @test uniform_metadata["measurement"]["enabled"] == false
+    @test uniform_metadata["circuit"]["num_clbits"] == 0
+    @test Set(keys(uniform_probabilities)) == Set(["00", "01", "10", "11"])
+    for probability in values(uniform_probabilities)
+        @test probability ≈ 0.25
+    end
+
+    reordered_circuit, reordered_metadata = QAOA.fixed_parameter_circuit(
+        model;
+        parameters=[-0.41, 0.23],
+        reps=1,
+        parameter_order=:gamma_then_beta,
+        measure=false,
+    )
+    reordered_probabilities = QiskitOpt.PythonCall.pyconvert(
+        Dict{String,Float64},
+        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(reordered_circuit).probabilities_dict(),
+    )
+    @test reordered_metadata["parameters"]["input_order"] == "gamma_then_beta"
+    @test reordered_metadata["parameters"]["values"] == parameters
+    @test Set(keys(reordered_probabilities)) == Set(keys(exported_probabilities))
+    for key in keys(exported_probabilities)
+        @test reordered_probabilities[key] ≈ exported_probabilities[key]
+    end
+
+    @test QAOA.count_key_bits("10") == [0, 1]
+    @test QAOA.count_key_bitstring("10") == "01"
+    @test QUBOTools.value(QAOA.count_key_bits("10"), linear, quadratic, qubo_scale, qubo_offset) ≈
+          QUBOTools.value([0, 1], linear, quadratic, qubo_scale, qubo_offset)
+
+    MOI.set(model, QAOA.NumberOfLayers(), 1)
+    _, default_layer_metadata = QAOA.fixed_parameter_circuit(
+        model;
+        parameters=parameters,
+        measure=false,
+    )
+    @test default_layer_metadata["qaoa"]["number_of_layers"] == 1
+
+    @test_throws ArgumentError QAOA.fixed_parameter_circuit(model; parameters=[0.0], reps=1)
+    @test_throws ArgumentError QAOA.fixed_parameter_circuit(
+        model;
+        parameters=parameters,
+        reps=1,
+        number_of_layers=2,
+    )
+    @test_throws ArgumentError QAOA.fixed_parameter_circuit(
+        model;
+        parameters=parameters,
+        reps=1,
+        parameter_order=:interleaved,
+    )
+end
+
 @testset "Initial parameter validation fails before backend execution" begin
     previous_builder = QiskitOpt._runtime_service_builder[]
     QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
