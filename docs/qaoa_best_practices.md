@@ -165,6 +165,62 @@ the returned metadata when you need it. Use
 `QiskitOpt.QAOA.count_key_bits(key)` to convert Qiskit count keys back to
 `[x1, x2, ...]` before scoring with `QUBOTools.value`.
 
+## IBM Runtime Handoff For Fixed Circuits
+
+Use `QiskitOpt.QAOA.ibm_runtime_handoff` when QiskitOpt has built a measured,
+fixed-parameter QAOA circuit and another workflow is responsible for IBM
+Runtime account configuration and job monitoring. The helper is dry-runable by
+default, so it can be exercised in CI without credentials:
+
+```julia
+handoff = QiskitOpt.QAOA.ibm_runtime_handoff(
+    circuit;
+    fixed_metadata=metadata,
+    backend="ibm_fez",
+    shots=8192,
+    transpiler_seed=73001,
+)
+```
+
+The dry-run metadata records the intended backend, shot budget, transpiler
+seed, fixed QAOA parameter metadata, package versions, and count-key scoring
+assumptions. It records whether an instance selector is configured, but it does
+not record token values, instance/CRN values, account file paths, or other
+credential material.
+
+Live submission requires an explicit opt-in:
+
+```julia
+live_handoff = QiskitOpt.QAOA.ibm_runtime_handoff(
+    circuit;
+    fixed_metadata=metadata,
+    backend="ibm_fez",
+    shots=8192,
+    transpiler_seed=73001,
+    dry_run=false,
+)
+
+job = live_handoff.job
+job_id = live_handoff.metadata["runtime_handoff"]["job"]["id"]
+```
+
+The live path resolves the named backend with `QiskitRuntimeService`,
+transpiles the measured circuit with the requested seed and optimization level,
+then submits it through `qiskit_ibm_runtime.SamplerV2`. Credentials should come
+from normal Qiskit Runtime account storage or environment variables such as
+`QISKIT_IBM_TOKEN`; QiskitOpt does not persist them. Set
+`QISKIT_IBM_INSTANCE` or pass `instance=...` when Runtime cannot auto-resolve an
+account instance. In practice this may be required even when a token is present;
+the Runtime failure can look like:
+
+```text
+IBMInputValueError: No matching instances found for the following filters: .
+```
+
+Treat returned counts as Qiskit count keys. Convert keys with
+`QiskitOpt.QAOA.count_key_bits(key)`, then score them with the linear,
+quadratic, scale, and offset values from the original QUBO.
+
 ## Moving From Aer To IBM Hardware
 
 Use three stages when hardware execution is the goal:

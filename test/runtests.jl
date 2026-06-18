@@ -607,6 +607,66 @@ end
     @test metadata["circuit"]["num_clbits"] == 2
     @test metadata["circuit"]["operations"]["measure"] == 2
 
+    previous_builder = QiskitOpt._runtime_service_builder[]
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
+    try
+        withenv(
+            "QISKIT_IBM_TOKEN" => "secret-token-issue-45",
+            "QISKIT_IBM_INSTANCE" => "secret-instance-issue-45",
+            "QISKIT_IBM_CHANNEL" => "ibm_quantum_platform",
+        ) do
+            unsafe_metadata = merge(
+                metadata,
+                Dict{String,Any}(
+                    "token" => "secret-token-issue-45",
+                    "instance" => "secret-instance-issue-45",
+                    "account_file" => "/tmp/secret-account.json",
+                ),
+            )
+
+            handoff = QAOA.ibm_runtime_handoff(
+                circuit;
+                fixed_metadata=unsafe_metadata,
+                backend="ibm_fez",
+                shots=4096,
+                transpiler_seed=73001,
+            )
+
+            @test handoff.job === nothing
+            @test handoff.transpiled_circuit === nothing
+            @test handoff.metadata["runtime_handoff"]["mode"] == "dry_run"
+            @test handoff.metadata["runtime_handoff"]["status"] == "dry_run"
+            @test handoff.metadata["runtime_handoff"]["backend"] == "ibm_fez"
+            @test handoff.metadata["runtime_handoff"]["shots"] == 4096
+            @test handoff.metadata["runtime_handoff"]["transpiler_seed"] == 73001
+            @test handoff.metadata["runtime_handoff"]["instance_configured"] == true
+            @test handoff.metadata["runtime_handoff"]["credentials_recorded"] == false
+            @test handoff.metadata["fixed_parameter_circuit"]["parameters"]["parameter_names"] == ["β[0]", "γ[0]"]
+            @test handoff.metadata["fixed_parameter_circuit"]["objective"]["value_convention"] ==
+                  "QUBOTools.value(bits, linear, quadratic, scale, offset)"
+            @test handoff.metadata["count_scoring"]["bit_conversion"] == "QAOA.count_key_bits"
+            @test haskey(handoff.metadata["packages"], "qiskit")
+            @test !haskey(handoff.metadata["fixed_parameter_circuit"], "token")
+            @test !haskey(handoff.metadata["fixed_parameter_circuit"], "instance")
+            @test !haskey(handoff.metadata["fixed_parameter_circuit"], "account_file")
+
+            handoff_text = repr(handoff.metadata)
+            @test !occursin("secret-token-issue-45", handoff_text)
+            @test !occursin("secret-instance-issue-45", handoff_text)
+            @test !occursin("/tmp/secret-account.json", handoff_text)
+        end
+    finally
+        QiskitOpt._runtime_service_builder[] = previous_builder
+    end
+
+    @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="", shots=1024)
+    @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="ibm_fez", shots=0)
+    @test_throws ArgumentError QAOA.ibm_runtime_handoff(
+        circuit.remove_final_measurements(inplace=false);
+        backend="ibm_fez",
+        shots=1024,
+    )
+
     max_model, _ = build_model(
         QAOA.Optimizer;
         Q=[

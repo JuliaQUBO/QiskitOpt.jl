@@ -179,7 +179,41 @@ variable order, Qiskit count-key bit order, objective scale/offset, objective
 sign convention, and backend-independent circuit properties. Parameter values
 stored in metadata always align with the Qiskit parameter names, regardless of
 the input order. Store caller-specific angle provenance, such as training seed
-or source path, alongside the returned metadata when you need it. Convert a
+or source path, alongside the returned metadata when you need it.
+
+Use `QiskitOpt.QAOA.ibm_runtime_handoff` when the fixed circuit is ready for an
+IBM Runtime `SamplerV2` handoff. The default mode is a credential-free dry run:
+it records the intended backend, shots, transpiler seed, fixed-parameter
+metadata, package versions, and count-scoring convention without contacting IBM
+or writing token, instance/CRN, or account-file values into the metadata.
+
+```julia
+handoff = QiskitOpt.QAOA.ibm_runtime_handoff(
+    circuit;
+    fixed_metadata=metadata,
+    backend="ibm_fez",
+    shots=8192,
+    transpiler_seed=73001,
+)
+```
+
+Live submission is opt-in:
+
+```julia
+live_handoff = QiskitOpt.QAOA.ibm_runtime_handoff(
+    circuit;
+    fixed_metadata=metadata,
+    backend="ibm_fez",
+    shots=8192,
+    transpiler_seed=73001,
+    dry_run=false,
+)
+```
+
+Runtime credentials remain outside QiskitOpt artifacts and are read through the
+normal Qiskit Runtime account flow or environment variables. Set
+`QISKIT_IBM_INSTANCE` or pass `instance=...` when Runtime cannot auto-resolve an
+account instance; this may be required even when a token is present. Convert a
 Qiskit count key back to QUBO variable order with:
 
 ```julia
