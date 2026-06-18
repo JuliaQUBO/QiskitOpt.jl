@@ -156,6 +156,36 @@ initial vector under `metadata["initial_parameters"]`. Disable this with
 set_attribute(model, QiskitOpt.QAOA.RecordInitialParameters(), false)
 ```
 
+## Fixed-Parameter QAOA Circuits
+Use `QiskitOpt.QAOA.fixed_parameter_circuit` when parameters were trained
+outside QiskitOpt and you need the Qiskit circuit that QiskitOpt would bind for
+that QUBO. This path does not run `QAOA.Optimizer`, choose a backend, transpile,
+sample, or contact IBM Runtime.
+
+```julia
+qaoa_parameters = QiskitOpt.QAOA.fixed_angle_initial_parameters(number_of_layers=2)
+
+circuit, metadata = QiskitOpt.QAOA.fixed_parameter_circuit(
+    JuMP.unsafe_backend(model);
+    parameters=qaoa_parameters,
+    reps=2,
+    parameter_order=:beta_then_gamma,
+    measure=true,
+)
+```
+
+The metadata records QAOA depth, Qiskit parameter names and binding order,
+variable order, Qiskit count-key bit order, objective scale/offset, objective
+sign convention, and backend-independent circuit properties. Parameter values
+stored in metadata always align with the Qiskit parameter names, regardless of
+the input order. Store caller-specific angle provenance, such as training seed
+or source path, alongside the returned metadata when you need it. Convert a
+Qiskit count key back to QUBO variable order with:
+
+```julia
+bits = QiskitOpt.QAOA.count_key_bits("0101")
+```
+
 ## Configuring Local Aer
 Both `QAOA.Optimizer` and `VQE.Optimizer` expose the same Aer local-simulation attributes. They apply when the optimizer builds the default local backend, and also when `IBMBackend()` is combined with `IsLocal() == true` to emulate a named IBM backend through Aer.
 

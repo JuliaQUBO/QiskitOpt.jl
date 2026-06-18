@@ -137,6 +137,34 @@ the source, parameter names, and values when `RecordInitialParameters()` is
 true. Keep that enabled for experiments where angles are compared across
 simulators, seeds, or hardware backends.
 
+## Exporting Fixed-Parameter Circuits
+
+Use `QiskitOpt.QAOA.fixed_parameter_circuit` after parameter search is complete
+and the next step is submitting or inspecting a fixed QAOA circuit. It uses the
+same QUBO-to-Qiskit cost-operator path and Qiskit `QAOAAnsatz` parameter order
+as `QAOA.Optimizer`, but it does not run the optimizer loop, select a backend,
+invoke Runtime primitives, transpile, or sample.
+
+```julia
+circuit, metadata = QiskitOpt.QAOA.fixed_parameter_circuit(
+    JuMP.unsafe_backend(model);
+    parameters=trained_parameters,
+    reps=p,
+    parameter_order=:beta_then_gamma,
+    measure=true,
+)
+```
+
+The metadata is intended to travel with exported circuits. It records variable
+order, Qiskit count-key order, QAOA parameter order, objective scale/offset,
+objective sign convention, and backend-independent circuit size information.
+Parameter values stored in metadata always align with Qiskit parameter names,
+regardless of the caller's input order. Store caller-specific angle provenance,
+such as source path, training target, seed, or expected probabilities, alongside
+the returned metadata when you need it. Use
+`QiskitOpt.QAOA.count_key_bits(key)` to convert Qiskit count keys back to
+`[x1, x2, ...]` before scoring with `QUBOTools.value`.
+
 ## Moving From Aer To IBM Hardware
 
 Use three stages when hardware execution is the goal:

@@ -234,6 +234,213 @@ function parameter_count(problem_or_nqubits; number_of_layers::Integer)
     return length(parameter_names(problem_or_nqubits; number_of_layers=number_of_layers))
 end
 
+function _fixed_parameter_sampler(sampler::QUBODrivers.AbstractSampler)
+    return sampler
+end
+
+function _fixed_parameter_sampler(model::MOI.ModelLike)
+    sampler = QAOA.Optimizer{Float64}()
+    MOI.copy_to(sampler, model)
+    return sampler
+end
+
+function _stored_number_of_layers(model)
+    return MOI.get(model, QAOA.NumberOfLayers())
+end
+
+function _resolve_fixed_parameter_layers(source; reps, number_of_layers)
+    if isnothing(reps) && isnothing(number_of_layers)
+        return _check_number_of_layers(_stored_number_of_layers(source))
+    elseif isnothing(number_of_layers)
+        return _check_number_of_layers(reps)
+    elseif isnothing(reps)
+        return _check_number_of_layers(number_of_layers)
+    end
+
+    checked_reps = _check_number_of_layers(reps)
+    checked_layers = _check_number_of_layers(number_of_layers)
+    checked_reps == checked_layers ||
+        throw(ArgumentError("reps and number_of_layers must match when both are provided"))
+    return checked_layers
+end
+
+function _qiskit_ordered_qaoa_parameters(
+    parameters::AbstractVector,
+    number_of_layers::Integer,
+    parameter_order::Symbol,
+)
+    p = _check_number_of_layers(number_of_layers)
+    values = Float64.(parameters)
+    expected_count = 2 * p
+    if length(values) != expected_count
+        throw(
+            ArgumentError(
+                "fixed_parameter_circuit parameters length $(length(values)) does not match " *
+                "the expected QAOA parameter count $(expected_count)",
+            ),
+        )
+    end
+
+    if parameter_order in (:beta_then_gamma, :qiskit)
+        return values
+    elseif parameter_order == :gamma_then_beta
+        return vcat(values[(p + 1):end], values[1:p])
+    end
+
+    throw(ArgumentError("unsupported QAOA parameter_order: $(parameter_order)"))
+end
+
+function _objective_sense_name(sense)
+    sense == MOI.MIN_SENSE && return "min"
+    sense == MOI.MAX_SENSE && return "max"
+    return string(sense)
+end
+
+function _qiskit_minimization_sign(sense)
+    return sense == MOI.MIN_SENSE ? 1 : -1
+end
+
+function _circuit_operation_counts(circuit)
+    operations = Dict{String,Int}()
+    counts = circuit.count_ops()
+    for key in counts.keys()
+        operations[pyconvert(String, key)] = pyconvert(Int, counts[key])
+    end
+    return operations
+end
+
+function _fixed_parameter_metadata(
+    sampler::QUBODrivers.AbstractSampler,
+    circuit,
+    number_of_layers::Integer,
+    parameter_order::Symbol,
+    parameter_names::AbstractVector{<:AbstractString},
+    parameter_values::AbstractVector{<:Real},
+    measure::Bool,
+)
+    n, _, _, α, β = QUBOTools.qubo(sampler, :dense)
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+
+    return Dict{String,Any}(
+        "algorithm" => Dict{String,Any}(
+            "name" => "QAOA",
+            "mode" => "fixed_parameter_circuit",
+        ),
+        "qaoa" => Dict{String,Any}(
+            "number_of_layers" => number_of_layers,
+            "cost_layer" => "qiskit.circuit.library.QAOAAnsatz cost_operator",
+            "mixer" => "qiskit.circuit.library.QAOAAnsatz default mixer",
+        ),
+        "parameters" => Dict{String,Any}(
+            "input_order" => String(parameter_order),
+            "qiskit_order" => "beta_then_gamma",
+            "parameter_names" => String.(parameter_names),
+            "values_order" => "qiskit_order",
+            "values_aligned_to" => "parameter_names",
+            "values" => Float64.(parameter_values),
+        ),
+        "variables" => Dict{String,Any}(
+            "count" => n,
+            "order" => string.(1:n),
+            "qubit_order" => "variable 1 maps to Qiskit qubit 0",
+        ),
+        "measurement" => Dict{String,Any}(
+            "enabled" => measure,
+            "classical_bit_order" => measure ? "variable 1 maps to classical bit 0" : nothing,
+            "qiskit_count_key_order" => "Qiskit count keys print classical bits from highest to lowest index",
+            "variable_bit_order" => "QAOA.count_key_bits(key) returns bits in variable order",
+        ),
+        "objective" => Dict{String,Any}(
+            "sense" => _objective_sense_name(sense),
+            "scale" => α,
+            "offset" => β,
+            "qiskit_minimization_sign" => _qiskit_minimization_sign(sense),
+            "value_convention" => "QUBOTools.value(bits, linear, quadratic, scale, offset)",
+        ),
+        "circuit" => Dict{String,Any}(
+            "num_qubits" => pyconvert(Int, circuit.num_qubits),
+            "num_clbits" => pyconvert(Int, circuit.num_clbits),
+            "depth" => pyconvert(Int, circuit.depth()),
+            "operations" => _circuit_operation_counts(circuit),
+        ),
+    )
+end
+
+"""
+    QAOA.count_key_bits(key)
+
+Convert a Qiskit count key into QUBO variable order.
+
+Qiskit count dictionaries print classical bits from the highest classical-bit
+index down to zero. QiskitOpt scores samples as `[x1, x2, ...]`, so this helper
+reverses the rendered key in the same way as `QAOA.Optimizer`.
+"""
+function count_key_bits(key)
+    return sample_bits(key)
+end
+
+"""
+    QAOA.count_key_bitstring(key)
+
+Convert a Qiskit count key into a bitstring in QUBO variable order.
+"""
+function count_key_bitstring(key)
+    return join(count_key_bits(key))
+end
+
+"""
+    QAOA.fixed_parameter_circuit(source; parameters, reps=nothing, number_of_layers=nothing, parameter_order=:beta_then_gamma, measure=true)
+
+Build a Qiskit `QAOAAnsatz` circuit from an MOI model-like source or
+QUBODrivers sampler and bind an explicit QAOA parameter vector without running
+`QAOA.Optimizer`.
+
+`parameters` defaults to Qiskit's QAOA list-binding order: all beta angles,
+then all gamma angles. Pass `parameter_order=:gamma_then_beta` to provide the
+opposite block order. The returned metadata records variable order, count-key
+bit order, parameter order, objective scale/offset, objective sign convention,
+and backend-independent circuit properties. Metadata parameter `values` are
+always stored in Qiskit binding order and align positionally with
+`parameter_names`; `input_order` records the caller's input format.
+"""
+function fixed_parameter_circuit(
+    source::MOI.ModelLike;
+    parameters,
+    reps = nothing,
+    number_of_layers = nothing,
+    parameter_order::Symbol = :beta_then_gamma,
+    measure::Bool = true,
+)
+    p = _resolve_fixed_parameter_layers(
+        source;
+        reps=reps,
+        number_of_layers=number_of_layers,
+    )
+    sampler = _fixed_parameter_sampler(source)
+    ising_hamiltonian = quadratic_program(sampler)[0]
+    ansatz = qiskit().circuit.library.QAOAAnsatz(
+        ising_hamiltonian,
+        reps=p,
+    )
+    parameter_names = qiskit_parameter_names(ansatz)
+    parameter_values = _qiskit_ordered_qaoa_parameters(parameters, p, parameter_order)
+    validate_initial_parameters(parameter_values, length(parameter_names), "QAOA")
+
+    circuit = ansatz.assign_parameters(numpy().array(parameter_values))
+    measure && circuit.measure_all()
+
+    metadata = _fixed_parameter_metadata(
+        sampler,
+        circuit,
+        p,
+        parameter_order,
+        parameter_names,
+        parameter_values,
+        measure,
+    )
+    return circuit, metadata
+end
+
 """
     QAOA.random_initial_parameters(; number_of_layers, seed=nothing, rng=nothing)
 
