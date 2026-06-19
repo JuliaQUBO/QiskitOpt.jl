@@ -894,7 +894,7 @@ function _postprocessing_context(
     sample,
     rank::Integer,
     total_reads::Integer,
-    source_metadata::Dict{String,Any},
+    metadata_snapshot::Dict{String,Any},
 )
     reads = QUBOTools.reads(sample)
     probability = iszero(total_reads) ? 0.0 : reads / total_reads
@@ -906,7 +906,7 @@ function _postprocessing_context(
         reads = reads,
         probability = probability,
         total_reads = total_reads,
-        metadata = deepcopy(source_metadata),
+        metadata = metadata_snapshot,
     )
 end
 
@@ -933,9 +933,11 @@ derived fields attached under `metadata["postprocessing"]`.
 
 The callback receives a copied sample and a context named tuple with `rank`,
 `state`, `raw_value`, `reads`, `probability`, `total_reads`, and the original
-metadata. It must return an `AbstractDict` or `NamedTuple`; keys are stringified
-for serialization-friendly metadata. Callback failures are rethrown as
-`SamplePostprocessingError` so raw quantum results are not silently corrupted.
+metadata. `context.metadata` is a shared read-only snapshot; do not mutate it
+from the callback. The callback must return an `AbstractDict` or `NamedTuple`;
+keys are stringified for serialization-friendly metadata. Callback failures are
+rethrown as `SamplePostprocessingError` so raw quantum results are not silently
+corrupted.
 """
 function postprocess_samples(
     postprocessor::Function,

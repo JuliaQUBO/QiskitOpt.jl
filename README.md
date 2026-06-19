@@ -219,9 +219,11 @@ first_row["derived"]["original_objective"]
 
 The helper returns a new `SampleSet`; raw states, reads, probabilities, and QUBO
 objective values are copied unchanged, while derived fields are stored under
-`metadata["postprocessing"]["rows"][i]["derived"]`. To skip postprocessing, do
-not call the helper, or pass `enabled=false` when keeping one code path for
-processed and unprocessed runs. Callback failures throw
+`metadata["postprocessing"]["rows"][i]["derived"]`. The callback context includes
+a shared read-only snapshot of the original `SampleSet` metadata as
+`context.metadata`. To skip postprocessing, do not call the helper, or pass
+`enabled=false` when keeping one code path for processed and unprocessed runs.
+Callback failures throw
 `QiskitOpt.SamplePostprocessingError` instead of returning a partially annotated
 result.
 

@@ -259,6 +259,7 @@ end
 
 @testset "Sample postprocessing helper" begin
     sampleset = toy_sampleset()
+    metadata_snapshot = Ref{Any}(nothing)
 
     processed = QiskitOpt.postprocess_samples(
         sampleset;
@@ -277,7 +278,11 @@ end
         @test context.reads == QUBOTools.reads(sample)
         @test context.total_reads == 4
         @test context.metadata["nested"]["tag"] == "raw"
-        context.metadata["nested"]["tag"] = "mutated in callback"
+        if context.rank == 1
+            metadata_snapshot[] = context.metadata
+        else
+            @test context.metadata === metadata_snapshot[]
+        end
         if context.rank == 1
             state[1] = 0
             context.state[2] = 1
