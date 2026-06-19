@@ -186,6 +186,47 @@ qaoa_circuit, qaoa_metadata = QiskitOpt.QAOA.fixed_parameter_circuit(
 )
 ```
 
+## Sample Postprocessing
+Raw QUBO samples are kept as the solver returned them. When an application needs
+projected variables, feasibility flags, repaired objectives, or labels from the
+original model, attach those derived values with `postprocess_samples`:
+
+```julia
+processed = QiskitOpt.postprocess_samples(
+    sampleset;
+    name="toy_projection",
+    version="1.0.0",
+    source_problem="two-bit original model",
+    scoring_convention="sum projected decision bits",
+) do sample, context
+    bits = QiskitOpt.QUBOTools.state(sample)
+    projected = bits[1:2]
+
+    return Dict(
+        "original_objective" => sum(projected),
+        "feasible" => sum(projected) <= 1,
+        "projected_variables" => projected,
+    )
+end
+
+postprocessing = QiskitOpt.QUBOTools.metadata(processed)["postprocessing"]
+first_row = postprocessing["rows"][1]
+first_row["raw_value"]                  # unchanged QUBO objective
+first_row["reads"]                      # raw sample count
+first_row["probability"]                # reads / total reads
+first_row["derived"]["original_objective"]
+```
+
+The helper returns a new `SampleSet`; raw states, reads, probabilities, and QUBO
+objective values are copied unchanged, while derived fields are stored under
+`metadata["postprocessing"]["rows"][i]["derived"]`. The callback context includes
+a shared read-only snapshot of the original `SampleSet` metadata as
+`context.metadata`. To skip postprocessing, do not call the helper, or pass
+`enabled=false` when keeping one code path for processed and unprocessed runs.
+Callback failures throw
+`QiskitOpt.SamplePostprocessingError` instead of returning a partially annotated
+result.
+
 ## Fixed-Parameter QAOA Circuits
 Use `QiskitOpt.QAOA.fixed_parameter_circuit` when parameters were trained
 outside QiskitOpt and you need the Qiskit circuit that QiskitOpt would bind for

@@ -242,6 +242,151 @@ function expected_maxcut_value(statevector, edges)
     return expected_value
 end
 
+function toy_sampleset()
+    samples = QUBOTools.Sample{Float64,Int}[
+        QUBOTools.Sample{Float64,Int}([1, 0, 1], -2.0, 3),
+        QUBOTools.Sample{Float64,Int}([1, 1, 0], 1.0, 1),
+    ]
+
+    return QUBOTools.SampleSet{Float64,Int}(
+        samples;
+        metadata = Dict{String,Any}(
+            "source" => "toy raw samples",
+            "nested" => Dict{String,Any}("tag" => "raw"),
+        ),
+    )
+end
+
+@testset "Sample postprocessing helper" begin
+    sampleset = toy_sampleset()
+    metadata_snapshot = Ref{Any}(nothing)
+
+    processed = QiskitOpt.postprocess_samples(
+        sampleset;
+        name = "toy_projection",
+        version = v"1.0.0",
+        source_problem = "two-bit original model",
+        scoring_convention = "sum of projected bits",
+        metadata = (schema = "toy-v1",),
+    ) do sample, context
+        state = QUBOTools.state(sample)
+        projected_variables = state[1:2]
+
+        @test context.rank in (1, 2)
+        @test context.state == state
+        @test context.raw_value == QUBOTools.value(sample)
+        @test context.reads == QUBOTools.reads(sample)
+        @test context.total_reads == 4
+        @test context.metadata["nested"]["tag"] == "raw"
+        if context.rank == 1
+            metadata_snapshot[] = context.metadata
+        else
+            @test context.metadata === metadata_snapshot[]
+        end
+        if context.rank == 1
+            state[1] = 0
+            context.state[2] = 1
+        end
+
+        return (
+            original_objective = sum(projected_variables),
+            feasible = sum(projected_variables) <= 1,
+            projected_variables = projected_variables,
+        )
+    end
+
+    @test processed !== sampleset
+    @test !haskey(QUBOTools.metadata(sampleset), "postprocessing")
+    @test QUBOTools.metadata(sampleset)["nested"]["tag"] == "raw"
+    @test QUBOTools.metadata(processed)["nested"]["tag"] == "raw"
+
+    for index in 1:length(sampleset)
+        @test QUBOTools.state(processed[index]) == QUBOTools.state(sampleset[index])
+        @test QUBOTools.state(processed[index]) !== QUBOTools.state(sampleset[index])
+        @test QUBOTools.value(processed[index]) == QUBOTools.value(sampleset[index])
+        @test QUBOTools.reads(processed[index]) == QUBOTools.reads(sampleset[index])
+    end
+
+    postprocessing = QUBOTools.metadata(processed)["postprocessing"]
+    @test postprocessing["enabled"] == true
+    @test postprocessing["name"] == "toy_projection"
+    @test postprocessing["version"] == "1.0.0"
+    @test postprocessing["source_problem"] == "two-bit original model"
+    @test postprocessing["scoring_convention"] == "sum of projected bits"
+    @test postprocessing["metadata"] == Dict{String,Any}("schema" => "toy-v1")
+    @test postprocessing["row_count"] == 2
+
+    rows = postprocessing["rows"]
+    @test rows[1]["rank"] == 1
+    @test rows[1]["state"] == [1, 0, 1]
+    @test rows[1]["bitstring"] == "101"
+    @test rows[1]["raw_value"] == -2.0
+    @test rows[1]["reads"] == 3
+    @test rows[1]["probability"] == 0.75
+    @test rows[1]["derived"] == Dict{String,Any}(
+        "original_objective" => 1,
+        "feasible" => true,
+        "projected_variables" => [1, 0],
+    )
+    @test rows[2]["derived"]["original_objective"] == 2
+    @test rows[2]["derived"]["feasible"] == false
+    @test rows[2]["probability"] == 0.25
+
+    skipped = QiskitOpt.postprocess_samples(sampleset; enabled=false) do
+        error("disabled postprocessor should not run")
+    end
+    @test !haskey(QUBOTools.metadata(skipped), "postprocessing")
+    @test QUBOTools.state(skipped[1]) == QUBOTools.state(sampleset[1])
+    @test QUBOTools.state(skipped[1]) !== QUBOTools.state(sampleset[1])
+
+    bad_metadata_called = Ref(false)
+    bad_metadata = try
+        QiskitOpt.postprocess_samples(sampleset; metadata=1) do _, _
+            bad_metadata_called[] = true
+            return Dict{String,Any}()
+        end
+    catch err
+        err
+    end
+    @test bad_metadata isa ArgumentError
+    @test !bad_metadata_called[]
+    @test occursin("postprocessing metadata", sprint(showerror, bad_metadata))
+
+    failure = try
+        QiskitOpt.postprocess_samples(sampleset) do _, context
+            context.rank == 1 && return Dict("ok" => true)
+            error("cannot decode sample")
+        end
+    catch err
+        err
+    end
+    @test failure isa QiskitOpt.SamplePostprocessingError
+    @test failure.rank == 2
+    @test occursin("cannot decode sample", sprint(showerror, failure))
+
+    bad_return = try
+        QiskitOpt.postprocess_samples(sampleset) do _, _
+            return 1
+        end
+    catch err
+        err
+    end
+    @test bad_return isa QiskitOpt.SamplePostprocessingError
+    @test bad_return.cause isa ArgumentError
+    @test occursin("AbstractDict or NamedTuple", sprint(showerror, bad_return))
+
+    bad_value = try
+        QiskitOpt.postprocess_samples(sampleset) do _, _
+            return Dict("decoder" => x -> x)
+        end
+    catch err
+        err
+    end
+    @test bad_value isa QiskitOpt.SamplePostprocessingError
+    @test bad_value.cause isa ArgumentError
+    @test occursin("must be serializable", sprint(showerror, bad_value))
+end
+
 @testset "DS-MFG example cached-data smoke" begin
     base_dir = joinpath(@__DIR__, "..", "examples", "ds_mfg_qubo")
     instance = DSMFGQUBOExample.load_instance(base_dir)
