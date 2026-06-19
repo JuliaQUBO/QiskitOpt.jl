@@ -21,6 +21,8 @@ using ..QiskitOpt:
     sample_bits,
     scipy,
     numpy,
+    optimizer_result_metadata,
+    python_float_vector,
     validate_initial_parameters
 
 using QUBO
@@ -247,6 +249,14 @@ function retrieve(
         method="cobyla",
         options=scipy_options,
     )
+    optimizer_iterations = python_int_property(result, :nit)
+    optimizer_evaluations = python_int_property(result, :nfev)
+    optimized_parameter_values = python_float_vector(result.x)
+    optimized_parameter_optimizer = optimizer_result_metadata(
+        result;
+        iterations=optimizer_iterations,
+        function_evaluations=optimizer_evaluations,
+    )
 
     qc = ansatz.assign_parameters(result.x)
     qc.measure_all()
@@ -267,8 +277,8 @@ function retrieve(
         backend_config_source=backend_selection.source,
         number_of_reads=final_num_reads,
         final_number_of_reads=final_num_reads,
-        optimizer_iterations=python_int_property(result, :nit),
-        optimizer_evaluations=python_int_property(result, :nfev),
+        optimizer_iterations=optimizer_iterations,
+        optimizer_evaluations=optimizer_evaluations,
         optimizer_number_of_reads=num_reads,
         seed_sampler=sampler_seed,
         seed_transpiler=aer_config.seed_transpiler,
@@ -276,6 +286,9 @@ function retrieve(
         initial_parameters=record_initial_parameters ? initial_parameter_values : nothing,
         initial_parameter_names=record_initial_parameters ? parameter_names : nothing,
         initial_parameter_source=record_initial_parameters ? initial_parameter_source : nothing,
+        optimized_parameters=optimized_parameter_values,
+        optimized_parameter_names=parameter_names,
+        optimized_parameter_optimizer=optimized_parameter_optimizer,
     )
 end
 

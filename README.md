@@ -156,6 +156,33 @@ initial vector under `metadata["initial_parameters"]`. Disable this with
 set_attribute(model, QiskitOpt.QAOA.RecordInitialParameters(), false)
 ```
 
+After a QAOA or VQE solve, `metadata["optimized_parameters"]` records the final
+optimizer vector in the same order as `metadata["optimized_parameters"]["parameter_names"]`.
+For QAOA this is the Qiskit order used by `QAOAAnsatz` and
+`fixed_parameter_circuit`: beta angles followed by gamma angles. For VQE it is
+the selected Qiskit ansatz parameter order.
+
+```julia
+MOI = QiskitOpt.QUBODrivers.MOI
+raw_solver = MOI.get(JuMP.unsafe_backend(model), MOI.RawSolver())
+sampleset = QiskitOpt.QUBOTools.solution(raw_solver)
+metadata = QiskitOpt.QUBOTools.metadata(sampleset)
+
+trained = metadata["optimized_parameters"]
+trained["parameter_names"]
+trained["values"]
+trained["optimizer"]["objective_value"]
+
+qaoa_reps = div(length(trained["values"]), 2)
+qaoa_circuit, qaoa_metadata = QiskitOpt.QAOA.fixed_parameter_circuit(
+    JuMP.unsafe_backend(model);
+    parameters=trained["values"],
+    reps=qaoa_reps,
+    parameter_order=:qiskit,
+    measure=true,
+)
+```
+
 ## Fixed-Parameter QAOA Circuits
 Use `QiskitOpt.QAOA.fixed_parameter_circuit` when parameters were trained
 outside QiskitOpt and you need the Qiskit circuit that QiskitOpt would bind for
