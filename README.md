@@ -160,7 +160,10 @@ After a QAOA or VQE solve, `metadata["optimized_parameters"]` records the final
 optimizer vector in the same order as `metadata["optimized_parameters"]["parameter_names"]`.
 For QAOA this is the Qiskit order used by `QAOAAnsatz` and
 `fixed_parameter_circuit`: beta angles followed by gamma angles. For VQE it is
-the selected Qiskit ansatz parameter order.
+the selected Qiskit ansatz parameter order. Use the top-level
+`metadata["optimizer"]` for run-level optimizer accounting, and
+`metadata["optimized_parameters"]["optimizer"]` for optimizer result fields tied
+to the recorded trained vector.
 
 ```julia
 MOI = QiskitOpt.QUBODrivers.MOI
