@@ -26,6 +26,23 @@ function Base.showerror(io::IO, err::PythonPackageError)
     end
 end
 
+struct SamplePostprocessingError <: Exception
+    rank::Int
+    sample::Any
+    cause::Any
+end
+
+function Base.showerror(io::IO, err::SamplePostprocessingError)
+    print(io, "sample postprocessing failed at rank $(err.rank)")
+    try
+        print(io, " for state ", QUBOTools.state(err.sample))
+        print(io, " with raw value ", QUBOTools.value(err.sample))
+    catch
+    end
+    print(io, "\nOriginal error: ")
+    showerror(io, err.cause)
+end
+
 Base.@kwdef struct RuntimeDiagnostic
     name::String
     ok::Bool
@@ -792,6 +809,189 @@ function optimized_parameter_metadata(
     )
 end
 
+function _serializable_postprocessing_value(value, path::AbstractString)
+    if value === nothing || value isa Bool || value isa AbstractString || value isa Integer
+        return value
+    elseif value isa AbstractFloat
+        isfinite(value) || throw(ArgumentError("postprocessing value at $(path) must be finite"))
+        return value
+    elseif value isa Symbol || value isa VersionNumber
+        return string(value)
+    elseif value isa AbstractDict || value isa NamedTuple
+        return _string_key_dict(value, path)
+    elseif value isa AbstractArray || value isa Tuple
+        return Any[
+            _serializable_postprocessing_value(item, "$(path)[$(index)]") for
+            (index, item) in enumerate(value)
+        ]
+    end
+
+    throw(
+        ArgumentError(
+            "postprocessing value at $(path) must be serializable; got $(typeof(value))",
+        ),
+    )
+end
+
+function _string_key_dict(data::AbstractDict, path::AbstractString = "metadata")
+    return Dict{String,Any}(
+        string(key) => _serializable_postprocessing_value(value, "$(path).$(string(key))") for
+        (key, value) in data
+    )
+end
+
+function _string_key_dict(data::NamedTuple, path::AbstractString = "metadata")
+    return Dict{String,Any}(
+        string(key) => _serializable_postprocessing_value(value, "$(path).$(string(key))") for
+        (key, value) in pairs(data)
+    )
+end
+
+function _derived_sample_fields(result)
+    if result isa AbstractDict || result isa NamedTuple
+        return _string_key_dict(result, "derived")
+    end
+
+    throw(
+        ArgumentError(
+            "sample postprocessor must return an AbstractDict or NamedTuple; got $(typeof(result))",
+        ),
+    )
+end
+
+function _postprocessing_metadata(metadata)
+    isnothing(metadata) && return Dict{String,Any}()
+    if metadata isa AbstractDict || metadata isa NamedTuple
+        return _string_key_dict(metadata)
+    end
+
+    throw(
+        ArgumentError(
+            "postprocessing metadata must be an AbstractDict, NamedTuple, or nothing; " *
+            "got $(typeof(metadata))",
+        ),
+    )
+end
+
+function _copied_sampleset(sampleset::QUBOTools.SampleSet{T,U}) where {T,U}
+    samples = QUBOTools.Sample{T,U}[
+        QUBOTools.Sample{T,U}(
+            copy(QUBOTools.state(sample)),
+            QUBOTools.value(sample),
+            QUBOTools.reads(sample),
+        ) for sample in sampleset
+    ]
+
+    return QUBOTools.SampleSet{T,U}(
+        samples;
+        metadata = deepcopy(QUBOTools.metadata(sampleset)),
+        sense    = QUBOTools.sense(sampleset),
+        domain   = QUBOTools.domain(sampleset),
+    )
+end
+
+function _postprocessing_context(
+    sample,
+    rank::Integer,
+    total_reads::Integer,
+    source_metadata::Dict{String,Any},
+)
+    reads = QUBOTools.reads(sample)
+    probability = iszero(total_reads) ? 0.0 : reads / total_reads
+
+    return (
+        rank = Int(rank),
+        state = copy(QUBOTools.state(sample)),
+        raw_value = QUBOTools.value(sample),
+        reads = reads,
+        probability = probability,
+        total_reads = total_reads,
+        metadata = deepcopy(source_metadata),
+    )
+end
+
+function _postprocessing_row(context)
+    state = copy(context.state)
+
+    return Dict{String,Any}(
+        "rank" => context.rank,
+        "state" => state,
+        "bitstring" => join(string.(state)),
+        "raw_value" => context.raw_value,
+        "reads" => context.reads,
+        "probability" => context.probability,
+        "derived" => Dict{String,Any}(),
+    )
+end
+
+"""
+    postprocess_samples(postprocessor, sampleset; kwargs...)
+    postprocess_samples(sampleset; kwargs...) do sample, context
+
+Return a new `SampleSet` with raw samples copied unchanged and user-defined
+derived fields attached under `metadata["postprocessing"]`.
+
+The callback receives a copied sample and a context named tuple with `rank`,
+`state`, `raw_value`, `reads`, `probability`, `total_reads`, and the original
+metadata. It must return an `AbstractDict` or `NamedTuple`; keys are stringified
+for serialization-friendly metadata. Callback failures are rethrown as
+`SamplePostprocessingError` so raw quantum results are not silently corrupted.
+"""
+function postprocess_samples(
+    postprocessor::Function,
+    sampleset::QUBOTools.SampleSet{T,U};
+    enabled::Bool = true,
+    name::AbstractString = "anonymous",
+    version = nothing,
+    source_problem = nothing,
+    scoring_convention = nothing,
+    metadata = Dict{String,Any}(),
+) where {T,U}
+    processed = _copied_sampleset(sampleset)
+    enabled || return processed
+
+    aggregate_metadata = _postprocessing_metadata(metadata)
+    source_metadata = deepcopy(QUBOTools.metadata(sampleset))
+    total_reads = sum(QUBOTools.reads(sample) for sample in sampleset; init = 0)
+    rows = Vector{Dict{String,Any}}()
+    sizehint!(rows, length(sampleset))
+
+    for (rank, sample) in enumerate(sampleset)
+        callback_sample = QUBOTools.Sample{T,U}(
+            copy(QUBOTools.state(sample)),
+            QUBOTools.value(sample),
+            QUBOTools.reads(sample),
+        )
+        context = _postprocessing_context(callback_sample, rank, total_reads, source_metadata)
+        row = _postprocessing_row(context)
+
+        derived = try
+            _derived_sample_fields(postprocessor(callback_sample, context))
+        catch err
+            throw(SamplePostprocessingError(rank, callback_sample, err))
+        end
+
+        row["derived"] = derived
+        push!(rows, row)
+    end
+
+    postprocessing = Dict{String,Any}(
+        "enabled" => true,
+        "name" => String(name),
+        "rows" => rows,
+        "row_count" => length(rows),
+        "metadata" => aggregate_metadata,
+    )
+    isnothing(version) || (postprocessing["version"] = string(version))
+    isnothing(source_problem) || (postprocessing["source_problem"] = string(source_problem))
+    isnothing(scoring_convention) ||
+        (postprocessing["scoring_convention"] = string(scoring_convention))
+
+    QUBOTools.metadata(processed)["postprocessing"] = postprocessing
+
+    return processed
+end
+
 function empty_metadata(
     algorithm::AbstractString,
     backend::AbstractString,
@@ -914,7 +1114,7 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     return qp.to_ising()
 end
 
-export  VQE, QAOA, check_runtime
+export VQE, QAOA, check_runtime, postprocess_samples, SamplePostprocessingError
 
 include("QAOA.jl")
 include("VQE.jl")
