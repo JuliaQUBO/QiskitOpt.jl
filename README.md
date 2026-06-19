@@ -208,7 +208,9 @@ measurement order, untranspiled depth/size/operation counts, backend target
 summary, transpiler seed and optimization level, transpiled depth/size/operation
 counts, two-qubit operation counts, measured-bit count, layout summary when
 available, sanitized failure metadata, and QiskitOpt/Qiskit package versions.
-Set `transpile=false` to record only the untranspiled circuit.
+Set `transpile=false` to record only the untranspiled circuit. The default Aer
+backend is useful for credential-free transpilation checks; pass a fake or real
+backend target when layout and routing metadata are part of the audit decision.
 
 Use `QiskitOpt.QAOA.ibm_runtime_handoff` when the fixed circuit is ready for an
 IBM Runtime `SamplerV2` handoff. The default mode is a credential-free dry run:

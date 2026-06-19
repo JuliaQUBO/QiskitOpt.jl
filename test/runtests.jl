@@ -781,6 +781,25 @@ end
         end
     end
 
+    python_failing_pass_manager_factory = (backend; optimization_level=3, seed_transpiler=nothing) -> (
+        run = inner_circuit -> QiskitOpt.qiskit().transpile(
+            inner_circuit;
+            backend="not-a-backend",
+        ),
+    )
+    python_failed_audit = QAOA.resource_audit(
+        circuit;
+        fixed_metadata=metadata,
+        backend=QiskitOpt.default_local_backend(),
+        pass_manager_factory=python_failing_pass_manager_factory,
+    )
+    @test python_failed_audit.transpiled_circuit === nothing
+    @test python_failed_audit.metadata["status"] == "failed_transpilation"
+    python_failure = python_failed_audit.metadata["transpilation"]["failure"]
+    @test python_failure["exception_type"] == "builtins.AttributeError"
+    @test occursin("AttributeError", python_failure["message"])
+    @test !occursin("PyException", python_failure["exception_type"])
+
     @test_throws ArgumentError QAOA.resource_audit(circuit; optimization_level=4)
 
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="", shots=1024)

@@ -1,6 +1,6 @@
 module QAOA
 
-using PythonCall: pyconvert, pylist, pydict, pyint, pylen, pystr, @pyexec
+using PythonCall: PyException, pyconvert, pylist, pydict, pyint, pylen, pystr, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
@@ -717,9 +717,14 @@ function _resource_audit_package_versions()
     )
 end
 
+function _resource_audit_exception_type(err)
+    err isa PyException && return _python_qualified_type(err.v)
+    return string(nameof(typeof(err)))
+end
+
 function _resource_audit_failure_metadata(err)
     return Dict{String,Any}(
-        "exception_type" => string(nameof(typeof(err))),
+        "exception_type" => _resource_audit_exception_type(err),
         "message" => _redact_runtime_message(
             sprint(showerror, err),
             (runtime_token(), runtime_instance()),
@@ -791,11 +796,10 @@ function _record_resource_audit_pass_manager!(metadata, pass_manager_selection)
     return metadata
 end
 
-function _mark_resource_audit_success!(metadata, transpiled_circuit, pass_manager_selection)
+function _mark_resource_audit_success!(metadata, transpiled_circuit)
     metadata["status"] = "success"
     transpilation = metadata["transpilation"]
     transpilation["status"] = "success"
-    _record_resource_audit_pass_manager!(metadata, pass_manager_selection)
     metadata["transpiled_circuit"] = _circuit_resource_metadata(transpiled_circuit)
     metadata["transpiled_circuit"]["layout"] = _transpiled_layout_metadata(transpiled_circuit)
     return metadata
@@ -891,7 +895,6 @@ function resource_audit(
         _mark_resource_audit_success!(
             metadata,
             transpiled_circuit,
-            pass_manager_selection,
         )
     catch err
         _mark_resource_audit_failed!(metadata, err)
