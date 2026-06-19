@@ -698,6 +698,110 @@ end
         QiskitOpt._runtime_service_builder[] = previous_builder
     end
 
+    resource_audit = QAOA.resource_audit(
+        model;
+        parameters=parameters,
+        reps=1,
+        optimization_level=1,
+        transpiler_seed=73001,
+        return_transpiled_circuit=true,
+    )
+    @test resource_audit.transpiled_circuit !== nothing
+    @test resource_audit.metadata["algorithm"]["mode"] == "resource_audit"
+    @test resource_audit.metadata["status"] == "success"
+    @test resource_audit.metadata["qaoa"]["number_of_layers"] == 1
+    @test resource_audit.metadata["parameters"]["parameter_names"] == ["β[0]", "γ[0]"]
+    @test resource_audit.metadata["parameters"]["values"] == parameters
+    @test resource_audit.metadata["variables"]["count"] == 2
+    @test resource_audit.metadata["measurement"]["enabled"]
+    @test resource_audit.metadata["backend"]["source"] == "default_local_backend"
+    @test startswith(resource_audit.metadata["backend"]["name"], "aer_simulator")
+    @test haskey(resource_audit.metadata["backend"], "target")
+    @test resource_audit.metadata["transpilation"]["status"] == "success"
+    @test resource_audit.metadata["transpilation"]["optimization_level"] == 1
+    @test resource_audit.metadata["transpilation"]["transpiler_seed"] == 73001
+    @test resource_audit.metadata["transpilation"]["pass_manager"]["source"] == "default_preset"
+    @test resource_audit.metadata["untranspiled_circuit"]["num_qubits"] == 2
+    @test resource_audit.metadata["untranspiled_circuit"]["num_clbits"] == 2
+    @test resource_audit.metadata["untranspiled_circuit"]["operations"]["measure"] == 2
+    @test resource_audit.metadata["untranspiled_circuit"]["size"] >=
+          resource_audit.metadata["untranspiled_circuit"]["depth"]
+    @test resource_audit.metadata["transpiled_circuit"]["num_qubits"] >= 2
+    @test resource_audit.metadata["transpiled_circuit"]["measured_bit_count"] == 2
+    @test resource_audit.metadata["transpiled_circuit"]["two_qubit_operation_count"] isa Integer
+    @test resource_audit.metadata["transpiled_circuit"]["layout"]["available"] isa Bool
+    @test haskey(resource_audit.metadata["packages"], "QiskitOpt")
+    @test haskey(resource_audit.metadata["packages"], "qiskit")
+
+    skipped_audit = QAOA.resource_audit(circuit; fixed_metadata=metadata, transpile=false)
+    @test skipped_audit.transpiled_circuit === nothing
+    @test skipped_audit.metadata["status"] == "skipped_transpilation"
+    @test skipped_audit.metadata["backend"]["source"] == "not_requested"
+    @test skipped_audit.metadata["transpilation"]["status"] == "skipped"
+    @test skipped_audit.metadata["transpilation"]["reason"] == "transpile=false"
+    @test !haskey(skipped_audit.metadata, "transpiled_circuit")
+
+    resource_secret_token = "resource-audit-secret-token"
+    resource_secret_instance = "resource-audit-secret-instance"
+    resource_secret_account_file = "/tmp/resource-audit-account.json"
+    resource_secret_crn = "resource-audit-crn"
+    failing_pass_manager_factory = (backend; optimization_level=3, seed_transpiler=nothing) -> (
+        run = _ -> error(
+            "transpile failed token=$(resource_secret_token) " *
+            "instance=$(resource_secret_instance) " *
+            "account_file=$(resource_secret_account_file) " *
+            "crn:$(resource_secret_crn)",
+        ),
+    )
+    withenv(
+        "QISKIT_IBM_TOKEN" => resource_secret_token,
+        "QISKIT_IBM_INSTANCE" => resource_secret_instance,
+    ) do
+        failed_audit = QAOA.resource_audit(
+            circuit;
+            fixed_metadata=metadata,
+            backend=QiskitOpt.default_local_backend(),
+            pass_manager_factory=failing_pass_manager_factory,
+        )
+        @test failed_audit.transpiled_circuit === nothing
+        @test failed_audit.metadata["status"] == "failed_transpilation"
+        @test failed_audit.metadata["transpilation"]["status"] == "failed"
+        @test failed_audit.metadata["transpilation"]["pass_manager"]["source"] == "custom_factory"
+        failure = failed_audit.metadata["transpilation"]["failure"]
+        @test failure["exception_type"] == "ErrorException"
+        @test occursin("[redacted]", failure["message"])
+        for secret in (
+            resource_secret_token,
+            resource_secret_instance,
+            resource_secret_account_file,
+            resource_secret_crn,
+        )
+            @test !occursin(secret, failure["message"])
+            @test !occursin(secret, repr(failed_audit.metadata))
+        end
+    end
+
+    python_failing_pass_manager_factory = (backend; optimization_level=3, seed_transpiler=nothing) -> (
+        run = inner_circuit -> QiskitOpt.qiskit().transpile(
+            inner_circuit;
+            backend="not-a-backend",
+        ),
+    )
+    python_failed_audit = QAOA.resource_audit(
+        circuit;
+        fixed_metadata=metadata,
+        backend=QiskitOpt.default_local_backend(),
+        pass_manager_factory=python_failing_pass_manager_factory,
+    )
+    @test python_failed_audit.transpiled_circuit === nothing
+    @test python_failed_audit.metadata["status"] == "failed_transpilation"
+    python_failure = python_failed_audit.metadata["transpilation"]["failure"]
+    @test python_failure["exception_type"] == "builtins.AttributeError"
+    @test occursin("AttributeError", python_failure["message"])
+    @test !occursin("PyException", python_failure["exception_type"])
+
+    @test_throws ArgumentError QAOA.resource_audit(circuit; optimization_level=4)
+
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="", shots=1024)
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="ibm_fez", shots=0)
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(
