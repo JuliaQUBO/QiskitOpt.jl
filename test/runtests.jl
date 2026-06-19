@@ -988,6 +988,18 @@ end
         @test metadata["initial_parameters"]["source"] == initial_parameter_source
         @test metadata["initial_parameters"]["parameter_names"] == initial_parameter_names
         @test metadata["initial_parameters"]["values"] == initial_parameters
+        optimized_parameters = metadata["optimized_parameters"]
+        @test optimized_parameters["source"] == "optimizer_result"
+        @test optimized_parameters["parameter_names"] == initial_parameter_names
+        @test optimized_parameters["values"] isa Vector{Float64}
+        @test length(optimized_parameters["parameter_names"]) == length(optimized_parameters["values"])
+        optimizer_result = optimized_parameters["optimizer"]
+        @test optimizer_result["success"] isa Union{Bool,Nothing}
+        @test optimizer_result["status"] isa Union{Integer,Nothing}
+        @test optimizer_result["message"] isa Union{String,Nothing}
+        @test optimizer_result["objective_value"] isa Union{Float64,Nothing}
+        @test optimizer_result["iterations"] == metadata["optimizer"]["iterations"]
+        @test optimizer_result["function_evaluations"] == metadata["optimizer"]["evaluations"]
         if optimizer_module === QAOA
             @test metadata["pass_manager"]["source"] == "default_preset"
             @test metadata["pass_manager"]["optimization_level"] == 3

@@ -695,6 +695,38 @@ function python_int_property(object, name::Symbol)
     end
 end
 
+function python_float_property(object, name::Symbol)
+    try
+        return PythonCall.pyconvert(Float64, getproperty(object, name))
+    catch
+        return nothing
+    end
+end
+
+function python_bool_property(object, name::Symbol)
+    try
+        return PythonCall.pyconvert(Bool, getproperty(object, name))
+    catch
+        return nothing
+    end
+end
+
+function python_string_property(object, name::Symbol)
+    try
+        return PythonCall.pyconvert(String, PythonCall.pystr(getproperty(object, name)))
+    catch
+        return nothing
+    end
+end
+
+function python_float_vector(object)
+    try
+        return PythonCall.pyconvert(Vector{Float64}, object)
+    catch
+        return Float64[PythonCall.pyconvert(Float64, value) for value in object]
+    end
+end
+
 function qiskit_parameter_names(circuit)
     return String[
         PythonCall.pyconvert(String, PythonCall.pystr(parameter))
@@ -732,6 +764,34 @@ function initial_parameter_metadata(
     )
 end
 
+function optimizer_result_metadata(
+    result;
+    iterations = python_int_property(result, :nit),
+    function_evaluations = python_int_property(result, :nfev),
+)
+    return Dict{String,Any}(
+        "success" => python_bool_property(result, :success),
+        "status" => python_int_property(result, :status),
+        "message" => python_string_property(result, :message),
+        "objective_value" => python_float_property(result, :fun),
+        "iterations" => iterations,
+        "function_evaluations" => function_evaluations,
+    )
+end
+
+function optimized_parameter_metadata(
+    values::AbstractVector,
+    names::AbstractVector{<:AbstractString},
+    optimizer::Union{AbstractDict,Nothing},
+)
+    return Dict{String,Any}(
+        "source" => "optimizer_result",
+        "parameter_names" => String.(names),
+        "values" => Float64.(values),
+        "optimizer" => isnothing(optimizer) ? Dict{String,Any}() : Dict{String,Any}(optimizer),
+    )
+end
+
 function empty_metadata(
     algorithm::AbstractString,
     backend::AbstractString,
@@ -752,6 +812,9 @@ function empty_metadata(
     initial_parameters::Union{AbstractVector,Nothing} = nothing,
     initial_parameter_names::Union{AbstractVector{<:AbstractString},Nothing} = nothing,
     initial_parameter_source::Union{AbstractString,Nothing} = nothing,
+    optimized_parameters::Union{AbstractVector,Nothing} = nothing,
+    optimized_parameter_names::Union{AbstractVector{<:AbstractString},Nothing} = nothing,
+    optimized_parameter_optimizer::Union{AbstractDict,Nothing} = nothing,
 )
     metadata = Dict{String,Any}(
         "origin" => "$(algorithm) @ $(backend)",
@@ -808,6 +871,15 @@ function empty_metadata(
         source = isnothing(initial_parameter_source) ? "unknown" : initial_parameter_source
         names = isnothing(initial_parameter_names) ? String[] : initial_parameter_names
         metadata["initial_parameters"] = initial_parameter_metadata(source, initial_parameters, names)
+    end
+
+    if !isnothing(optimized_parameters)
+        names = isnothing(optimized_parameter_names) ? String[] : optimized_parameter_names
+        metadata["optimized_parameters"] = optimized_parameter_metadata(
+            optimized_parameters,
+            names,
+            optimized_parameter_optimizer,
+        )
     end
 
     return metadata
