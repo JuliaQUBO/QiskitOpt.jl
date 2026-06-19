@@ -1,6 +1,6 @@
 module QAOA
 
-using PythonCall: pyconvert, pylist, pydict, pyint, pystr, @pyexec
+using PythonCall: pyconvert, pylist, pydict, pyint, pylen, pystr, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
@@ -320,6 +320,178 @@ function _circuit_operation_counts(circuit)
     return operations
 end
 
+function _python_qualified_type(object)
+    try
+        class_object = getproperty(object, :__class__)
+        module_name = pyconvert(String, getproperty(class_object, :__module__))
+        class_name = pyconvert(String, getproperty(class_object, :__name__))
+        return "$(module_name).$(class_name)"
+    catch
+        return string(typeof(object))
+    end
+end
+
+function _python_len_or_nothing(object)
+    try
+        return Int(pylen(object))
+    catch
+        return nothing
+    end
+end
+
+function _python_string_vector(object)
+    values = String[]
+    try
+        for item in object
+            push!(values, pyconvert(String, pystr(item)))
+        end
+    catch
+        return String[]
+    end
+    return sort!(unique(values))
+end
+
+function _python_object_summary(object; limit::Integer = 600)
+    try
+        text = pyconvert(String, pystr(object))
+        length(text) <= limit && return text
+        return text[begin:nextind(text, 0, limit)] * "..."
+    catch
+        return nothing
+    end
+end
+
+function _circuit_int_call(circuit, name::Symbol)
+    try
+        return pyconvert(Int, getproperty(circuit, name)())
+    catch
+        return nothing
+    end
+end
+
+function _instruction_operation_name(instruction)
+    try
+        return pyconvert(String, pystr(getproperty(getproperty(instruction, :operation), :name)))
+    catch
+        return nothing
+    end
+end
+
+function _instruction_width(instruction, field::Symbol)
+    try
+        return _python_len_or_nothing(getproperty(instruction, field))
+    catch
+        return nothing
+    end
+end
+
+function _two_qubit_operation_counts(circuit)
+    counts = Dict{String,Int}()
+    try
+        for instruction in circuit.data
+            _instruction_width(instruction, :qubits) == 2 || continue
+            name = _instruction_operation_name(instruction)
+            isnothing(name) && continue
+            name in ("barrier", "delay") && continue
+            counts[name] = get(counts, name, 0) + 1
+        end
+    catch
+        return Dict{String,Int}()
+    end
+    return counts
+end
+
+function _measured_bit_count(circuit)
+    measured = 0
+    try
+        for instruction in circuit.data
+            _instruction_operation_name(instruction) == "measure" || continue
+            width = _instruction_width(instruction, :clbits)
+            isnothing(width) || (measured += width)
+        end
+    catch
+        return nothing
+    end
+    return measured
+end
+
+function _circuit_resource_metadata(circuit)
+    two_qubit_counts = _two_qubit_operation_counts(circuit)
+    return Dict{String,Any}(
+        "num_qubits" => pyconvert(Int, circuit.num_qubits),
+        "num_clbits" => pyconvert(Int, circuit.num_clbits),
+        "depth" => _circuit_int_call(circuit, :depth),
+        "size" => _circuit_int_call(circuit, :size),
+        "operations" => _circuit_operation_counts(circuit),
+        "two_qubit_operation_counts" => two_qubit_counts,
+        "two_qubit_operation_count" => sum(values(two_qubit_counts); init=0),
+        "measured_bit_count" => _measured_bit_count(circuit),
+    )
+end
+
+function _target_resource_metadata(target)
+    metadata = Dict{String,Any}(
+        "type" => _python_qualified_type(target),
+        "num_qubits" => python_int_property(target, :num_qubits),
+    )
+
+    try
+        operation_names = _python_string_vector(getproperty(target, :operation_names))
+        isempty(operation_names) || (metadata["operation_names"] = operation_names)
+    catch
+    end
+
+    try
+        coupling_map = target.build_coupling_map()
+        edges = coupling_map.get_edges()
+        edge_count = _python_len_or_nothing(edges)
+        isnothing(edge_count) || (metadata["coupling_edge_count"] = edge_count)
+    catch
+    end
+
+    return metadata
+end
+
+function _backend_resource_metadata(backend, source::AbstractString)
+    metadata = Dict{String,Any}(
+        "source" => String(source),
+        "type" => _python_qualified_type(backend),
+        "name" => backend_name(backend),
+        "version" => backend_version(backend),
+        "num_qubits" => python_int_property(backend, :num_qubits),
+    )
+
+    try
+        metadata["basis_gates"] = _python_string_vector(backend.configuration().basis_gates)
+    catch
+    end
+
+    try
+        metadata["target"] = _target_resource_metadata(getproperty(backend, :target))
+    catch
+    end
+
+    return metadata
+end
+
+function _transpiled_layout_metadata(circuit)
+    try
+        layout = getproperty(circuit, :layout)
+        summary = Dict{String,Any}(
+            "available" => true,
+            "type" => _python_qualified_type(layout),
+            "summary" => _python_object_summary(layout),
+        )
+        for field in (:initial_layout, :final_layout, :input_qubit_mapping)
+            value = _python_object_summary(getproperty(layout, field))
+            isnothing(value) || (summary[string(field)] = value)
+        end
+        return summary
+    catch
+        return Dict{String,Any}("available" => false)
+    end
+end
+
 function _fixed_parameter_metadata(
     sampler::QUBODrivers.AbstractSampler,
     circuit,
@@ -536,6 +708,199 @@ function _redact_runtime_message(message::AbstractString, secrets)
     redacted = replace(redacted, r"(?i)(account[_ -]?file\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
     redacted = replace(redacted, r"(?i)\bcrn:[^\s,;]+" => "[redacted]")
     return redacted
+end
+
+function _resource_audit_package_versions()
+    return Dict{String,Any}(
+        "QiskitOpt" => _julia_package_version(),
+        "qiskit" => _python_package_version(qiskit),
+    )
+end
+
+function _resource_audit_failure_metadata(err)
+    return Dict{String,Any}(
+        "exception_type" => string(nameof(typeof(err))),
+        "message" => _redact_runtime_message(
+            sprint(showerror, err),
+            (runtime_token(), runtime_instance()),
+        ),
+    )
+end
+
+function _copy_resource_audit_sections!(metadata, fixed_metadata)
+    safe_metadata = _safe_fixed_parameter_metadata(fixed_metadata)
+    for section in ("qaoa", "parameters", "variables", "measurement", "objective")
+        haskey(safe_metadata, section) || continue
+        metadata[section] = safe_metadata[section]
+    end
+    isempty(safe_metadata) || (metadata["fixed_parameter_circuit"] = safe_metadata)
+    return metadata
+end
+
+function _resource_audit_backend(backend, transpile::Bool)
+    transpile || return (backend=nothing, source="not_requested")
+    isnothing(backend) && return (backend=default_local_backend(), source="default_local_backend")
+    return (backend=backend, source="user_backend")
+end
+
+function _resource_audit_base_metadata(
+    circuit;
+    fixed_metadata,
+    backend,
+    backend_source::AbstractString,
+    optimization_level::Integer,
+    transpiler_seed,
+)
+    metadata = Dict{String,Any}(
+        "algorithm" => Dict{String,Any}(
+            "name" => "QAOA",
+            "mode" => "resource_audit",
+        ),
+        "untranspiled_circuit" => _circuit_resource_metadata(circuit),
+        "transpilation" => Dict{String,Any}(
+            "optimization_level" => optimization_level,
+            "transpiler_seed" => transpiler_seed,
+        ),
+        "packages" => _resource_audit_package_versions(),
+    )
+
+    if isnothing(backend)
+        metadata["backend"] = Dict{String,Any}("source" => String(backend_source))
+    else
+        metadata["backend"] = _backend_resource_metadata(backend, backend_source)
+    end
+
+    _copy_resource_audit_sections!(metadata, fixed_metadata)
+    return metadata
+end
+
+function _mark_resource_audit_skipped!(metadata, reason::AbstractString)
+    metadata["status"] = "skipped_transpilation"
+    transpilation = metadata["transpilation"]
+    transpilation["status"] = "skipped"
+    transpilation["reason"] = String(reason)
+    return metadata
+end
+
+function _record_resource_audit_pass_manager!(metadata, pass_manager_selection)
+    transpilation = metadata["transpilation"]
+    transpilation["pass_manager"] = Dict{String,Any}(
+        "source" => pass_manager_selection.source,
+        "optimization_level" => pass_manager_selection.optimization_level,
+    )
+    return metadata
+end
+
+function _mark_resource_audit_success!(metadata, transpiled_circuit, pass_manager_selection)
+    metadata["status"] = "success"
+    transpilation = metadata["transpilation"]
+    transpilation["status"] = "success"
+    _record_resource_audit_pass_manager!(metadata, pass_manager_selection)
+    metadata["transpiled_circuit"] = _circuit_resource_metadata(transpiled_circuit)
+    metadata["transpiled_circuit"]["layout"] = _transpiled_layout_metadata(transpiled_circuit)
+    return metadata
+end
+
+function _mark_resource_audit_failed!(metadata, err)
+    metadata["status"] = "failed_transpilation"
+    transpilation = metadata["transpilation"]
+    transpilation["status"] = "failed"
+    transpilation["failure"] = _resource_audit_failure_metadata(err)
+    return metadata
+end
+
+"""
+    QAOA.resource_audit(source; parameters, reps=nothing, number_of_layers=nothing, parameter_order=:beta_then_gamma, measure=true, backend=nothing, transpile=true, optimization_level=3, transpiler_seed=73001, pass_manager_factory=nothing, return_transpiled_circuit=false)
+
+Build a fixed-parameter QAOA circuit and return dry-run resource metadata
+without submitting a job or touching IBM account state.
+
+When `transpile=true` and `backend` is not provided, the audit uses the
+credential-free local Aer backend. Pass a Qiskit backend object, such as a fake
+backend or an `AerSimulator.from_backend(...)` instance, to audit against a
+specific target. Set `transpile=false` to record only the untranspiled circuit
+metadata.
+"""
+function resource_audit(
+    source::MOI.ModelLike;
+    parameters,
+    reps = nothing,
+    number_of_layers = nothing,
+    parameter_order::Symbol = :beta_then_gamma,
+    measure::Bool = true,
+    kwargs...
+)
+    circuit, fixed_metadata = fixed_parameter_circuit(
+        source;
+        parameters=parameters,
+        reps=reps,
+        number_of_layers=number_of_layers,
+        parameter_order=parameter_order,
+        measure=measure,
+    )
+    return resource_audit(circuit; fixed_metadata=fixed_metadata, kwargs...)
+end
+
+"""
+    QAOA.resource_audit(circuit; fixed_metadata=nothing, backend=nothing, transpile=true, optimization_level=3, transpiler_seed=73001, pass_manager_factory=nothing, return_transpiled_circuit=false)
+
+Return dry-run resource metadata for an existing Qiskit circuit.
+
+The result is a named tuple with `metadata` and `transpiled_circuit`. Failure to
+transpile is reported as sanitized structured metadata with
+`metadata["transpilation"]["status"] == "failed"`; no job is submitted.
+"""
+function resource_audit(
+    circuit;
+    fixed_metadata = nothing,
+    backend = nothing,
+    transpile::Bool = true,
+    optimization_level::Integer = 3,
+    transpiler_seed::Union{Integer,Nothing} = 73001,
+    pass_manager_factory = nothing,
+    return_transpiled_circuit::Bool = false,
+)
+    checked_optimization_level = _check_optimization_level(optimization_level)
+    checked_seed = _check_transpiler_seed(transpiler_seed)
+    backend_selection = _resource_audit_backend(backend, transpile)
+
+    metadata = _resource_audit_base_metadata(
+        circuit;
+        fixed_metadata=fixed_metadata,
+        backend=backend_selection.backend,
+        backend_source=backend_selection.source,
+        optimization_level=checked_optimization_level,
+        transpiler_seed=checked_seed,
+    )
+
+    if !transpile
+        _mark_resource_audit_skipped!(metadata, "transpile=false")
+        return (metadata=metadata, transpiled_circuit=nothing)
+    end
+
+    transpiled_circuit = nothing
+    try
+        pass_manager_selection = _selected_pass_manager(
+            backend_selection.backend;
+            factory=pass_manager_factory,
+            optimization_level=checked_optimization_level,
+            seed_transpiler=checked_seed,
+        )
+        _record_resource_audit_pass_manager!(metadata, pass_manager_selection)
+        transpiled_circuit = pass_manager_selection.pass_manager.run(circuit)
+        _mark_resource_audit_success!(
+            metadata,
+            transpiled_circuit,
+            pass_manager_selection,
+        )
+    catch err
+        _mark_resource_audit_failed!(metadata, err)
+    end
+
+    return (
+        metadata=metadata,
+        transpiled_circuit=return_transpiled_circuit ? transpiled_circuit : nothing,
+    )
 end
 
 """

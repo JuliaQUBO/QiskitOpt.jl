@@ -181,6 +181,35 @@ stored in metadata always align with the Qiskit parameter names, regardless of
 the input order. Store caller-specific angle provenance, such as training seed
 or source path, alongside the returned metadata when you need it.
 
+Use `QiskitOpt.QAOA.resource_audit` before a noisy simulator or hardware run to
+record circuit resources without submitting a job or reading IBM credentials.
+When `backend` is omitted, the audit transpiles against QiskitOpt's
+credential-free local Aer backend. Pass a Qiskit fake backend, local
+`AerSimulator.from_backend(...)`, or IBM backend object when you need a specific
+target.
+
+```julia
+audit = QiskitOpt.QAOA.resource_audit(
+    JuMP.unsafe_backend(model);
+    parameters=qaoa_parameters,
+    reps=2,
+    optimization_level=3,
+    transpiler_seed=73001,
+    measure=true,
+)
+
+audit.metadata["untranspiled_circuit"]
+audit.metadata["transpilation"]["status"] # "success", "skipped", or "failed"
+audit.metadata["transpiled_circuit"]
+```
+
+The returned metadata includes QAOA layer and parameter details, variable and
+measurement order, untranspiled depth/size/operation counts, backend target
+summary, transpiler seed and optimization level, transpiled depth/size/operation
+counts, two-qubit operation counts, measured-bit count, layout summary when
+available, sanitized failure metadata, and QiskitOpt/Qiskit package versions.
+Set `transpile=false` to record only the untranspiled circuit.
+
 Use `QiskitOpt.QAOA.ibm_runtime_handoff` when the fixed circuit is ready for an
 IBM Runtime `SamplerV2` handoff. The default mode is a credential-free dry run:
 it records the intended backend, shots, transpiler seed, fixed-parameter
