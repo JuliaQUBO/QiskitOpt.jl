@@ -438,7 +438,9 @@ end
     @test local_diagnostics.packages["qiskit"].ok
     @test local_diagnostics.packages["qiskit_aer"].ok
     @test local_diagnostics.packages["qiskit_optimization"].ok
+    @test local_diagnostics.packages["numpy"].ok
     @test !isnothing(local_diagnostics.packages["qiskit"].version)
+    @test !isnothing(local_diagnostics.packages["numpy"].version)
     @test isnothing(local_diagnostics.ibm_runtime)
     @test !haskey(local_diagnostics.packages, "qiskit_ibm_runtime")
     @test !isnothing(local_diagnostics.local_backend)

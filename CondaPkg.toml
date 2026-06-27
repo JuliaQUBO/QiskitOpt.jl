@@ -4,7 +4,6 @@ channels = ["conda-forge"]
 python = ">=3.11,<3.12"
 
 [pip.deps]
-numpy               = "~=2.2.0"
 qiskit              = "~=2.3.0"
 qiskit-aer          = "~=0.17.0"
 qiskit-ibm-runtime  = "~=0.46.0"
