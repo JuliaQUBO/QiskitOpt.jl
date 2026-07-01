@@ -20,6 +20,7 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: "1"
+      - uses: julia-actions/cache@v3
       - name: Check IBM runtime configuration
         id: config
         shell: bash
