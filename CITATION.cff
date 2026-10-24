@@ -1,0 +1,89 @@
+cff-version: 1.2.0
+message: >-
+  If you use QiskitOpt.jl, cite this wrapper using this metadata. Also cite
+  upstream Qiskit and Qiskit Optimization when using their quantum algorithms
+  and simulators, as described in the README.
+title: "QiskitOpt.jl"
+type: software
+authors:
+  - family-names: "Maciel Xavier"
+    given-names: "Pedro"
+    affiliation: "Purdue University"
+    orcid: "https://orcid.org/0000-0002-4678-4942"
+  - family-names: "Ripper"
+    given-names: "Pedro"
+    orcid: "https://orcid.org/0000-0002-2227-3689"
+  - family-names: "Bernal Neira"
+    given-names: "David E."
+    affiliation: "Purdue University"
+    orcid: "https://orcid.org/0000-0002-8308-5016"
+abstract: >-
+  A JuMP and QUBODrivers interface for IBM Qiskit and Qiskit Optimization
+  variational quantum algorithms (QAOA and VQE).
+repository-code: "https://github.com/JuliaQUBO/QiskitOpt.jl"
+license: MIT
+version: "0.7.1"
+date-released: 2026-06-27
+doi: "10.5281/zenodo.7535883"
+keywords:
+  - Julia
+  - Qiskit
+  - QAOA
+  - VQE
+  - quadratic unconstrained binary optimization
+  - QUBO
+references:
+  - type: article
+    title: "Quantum computing with Qiskit"
+    authors:
+      - family-names: "Javadi-Abhari"
+        given-names: "Ali"
+      - family-names: "Treinish"
+        given-names: "Matthew"
+      - family-names: "Krsulich"
+        given-names: "Kevin"
+      - family-names: "Wood"
+        given-names: "Christopher J."
+      - family-names: "Lishman"
+        given-names: "Jake"
+      - family-names: "Gacon"
+        given-names: "Julien"
+      - family-names: "Martiel"
+        given-names: "Simon"
+      - family-names: "Nation"
+        given-names: "Paul D."
+      - family-names: "Bishop"
+        given-names: "Lev S."
+      - family-names: "Cross"
+        given-names: "Andrew W."
+      - family-names: "Johnson"
+        given-names: "Blake R."
+      - family-names: "Gambetta"
+        given-names: "Jay M."
+    year: 2024
+    url: "https://arxiv.org/abs/2405.08810"
+    scope: >-
+      Cite this work alongside the upstream Qiskit and Qiskit Optimization
+      projects when using their quantum circuit, simulator, or runtime stacks.
+  - type: article
+    title: >-
+      QUBO.jl: A Julia Ecosystem for Quadratic Unconstrained Binary
+      Optimization
+    authors:
+      - family-names: "Maciel Xavier"
+        given-names: "Pedro"
+      - family-names: "Ripper"
+        given-names: "Pedro"
+      - family-names: "Andrade"
+        given-names: "Tiago"
+      - family-names: "Dias Garcia"
+        given-names: "Joaquim"
+      - family-names: "Maculan"
+        given-names: "Nelson"
+      - family-names: "Bernal Neira"
+        given-names: "David E."
+    journal: "Optimization Methods and Software"
+    year: 2026
+    doi: "10.1080/10556788.2026.2702926"
+    scope: >-
+      Cite this work for general use of the JuliaQUBO ecosystem.

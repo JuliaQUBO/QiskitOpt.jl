@@ -1372,3 +1372,5 @@ end
     run_qubodrivers_suite(QAOA)
     run_qubodrivers_suite(VQE)
 end
+
+include("citation.jl")

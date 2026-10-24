@@ -1,5 +1,5 @@
 # QiskitOpt.jl
-[![DOI](https://zenodo.org/badge/587349377.svg)](https://zenodo.org/badge/latestdoi/587349377)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7535883.svg)](https://doi.org/10.5281/zenodo.7535883)
 [![QUBODRIVERS](https://img.shields.io/badge/Powered%20by-QUBODrivers.jl-%20%234063d8)](https://github.com/JuliaQUBO/QUBODrivers.jl)
 
 IBM Qiskit Optimization Wrapper for JuMP
@@ -476,6 +476,34 @@ QiskitRuntimeService.save_account(
     set_as_default=True,
 )
 ```
+
+## Citation
+
+For work that uses this Julia wrapper, cite `QiskitOpt.jl` with its
+[Zenodo concept DOI](https://doi.org/10.5281/zenodo.7535883). The concept DOI is
+the evergreen software identifier and resolves to the latest archived wrapper
+release. Citation metadata is available in [`CITATION.cff`](CITATION.cff).
+
+For exact-version reproducibility, cite the Zenodo version DOI recorded in that
+GitHub release and Zenodo record. For example, the latest archived Zenodo
+record under this concept is
+[10.5281/zenodo.11377340](https://doi.org/10.5281/zenodo.11377340) (`v0.3.0`).
+
+This wrapper depends on the separately maintained upstream
+[Qiskit](https://github.com/Qiskit/qiskit) and
+[Qiskit Optimization](https://github.com/qiskit-community/qiskit-optimization)
+projects. When using their quantum circuits, simulators, or optimization
+algorithms, also cite Javadi-Abhari et al.,
+["Quantum computing with Qiskit"](https://arxiv.org/abs/2405.08810), and the
+upstream [Qiskit citation guidance](https://github.com/Qiskit/qiskit/blob/main/CITATION.bib).
+The `QiskitOpt.jl` DOI identifies this Julia wrapper; it does not identify or
+archive upstream Qiskit components.
+
+For general discussion or use of the JuliaQUBO ecosystem, cite the
+[QUBO.jl ecosystem article](https://doi.org/10.1080/10556788.2026.2702926).
+
+Release-time archive verification steps are documented in
+[`.github/RELEASE_CHECKLIST.md`](.github/RELEASE_CHECKLIST.md).
 
 **Disclaimer:** _The IBM Qiskit Optimization Wrapper for Julia is not officially supported by IBM. If you are a commercial customer interested in official support for Julia from IBM, let them know!_
 
