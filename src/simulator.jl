@@ -1582,7 +1582,7 @@ function gas_grover_search(
 
     while no_improvement < max_iter
         rot_upper = max(1, ceil(Int, k_schedule))
-        r = rand(rng_opt, 1:rot_upper)
+        r = rand(rng_opt, 0:rot_upper)
 
         fill!(psi, unif_amp)
         for _ in 1:r
@@ -1615,11 +1615,14 @@ function gas_grover_search(
             shot_counts[s_idx0] = get(shot_counts, s_idx0, 0) + 1
         end
 
-        # Pick highest-count (and lowest-energy tie-break) sampled outcome
+        # Pick lowest-energy (and highest-count tie-break) sampled outcome
         candidate_idx0 = best_idx0
+        best_cand_val = typemax(Int)
         best_count = -1
         for (s_idx0, c) in shot_counts
-            if c > best_count || (c == best_count && obj_values[s_idx0 + 1] < obj_values[candidate_idx0 + 1])
+            v = obj_values[s_idx0 + 1]
+            if v < best_cand_val || (v == best_cand_val && (c > best_count || (c == best_count && s_idx0 < candidate_idx0)))
+                best_cand_val = v
                 best_count = c
                 candidate_idx0 = s_idx0
             end
