@@ -45,6 +45,9 @@ configuration is stable.
 | IBM Runtime account selection | `QiskitOpt.QAOA.Channel()` and `QiskitOpt.QAOA.Instance()` |
 | Custom local backend factory | `QiskitOpt.QAOA.IBMFakeBackend()` |
 | Custom QAOA pass-manager factory | `QiskitOpt.QAOA.PassManagerFactory()` |
+| Custom QAOA circuit-execution hook | `QiskitOpt.QAOA.CircuitExecutor()` |
+| Provider-neutral count decoding | `QiskitOpt.QAOA.decode_counts_sampleset(...)` |
+| Optional IQM handoff / execution | `QiskitOpt.QAOA.iqm_runtime_handoff(...)`, `QiskitOpt.QAOA.execute_fixed_parameter_circuit(...)` |
 
 QiskitOpt.jl defaults to local Aer execution when `IBMBackend()` is unset. The
 default Aer method is `matrix_product_state`, so a first QAOA run does not need
@@ -247,8 +250,14 @@ fragments from captured errors. Treat that as a final guardrail, not a reason to
 store credentials in project outputs.
 
 Treat returned counts as Qiskit count keys. Convert keys with
-`QiskitOpt.QAOA.count_key_bits(key)`, then score them with the linear,
-quadratic, scale, and offset values from the original QUBO.
+`QiskitOpt.QAOA.count_key_bits(key; layout_permutation=...)`, or decode a count
+dictionary directly into a scored `SampleSet` with
+`QiskitOpt.QAOA.decode_counts_sampleset(model, counts; layout_permutation=...)`.
+For non-IBM Qiskit `BackendV2` targets such as IQM backends (`iqm-client[qiskit]`
+providing `iqm.qiskit_iqm`), use `QiskitOpt.QAOA.iqm_runtime_handoff` (dry-run by
+default, redacting `IQM_TOKEN`, `IQM_TOKENS_FILE`, and `IQM_SERVER_URL`) or
+`QiskitOpt.QAOA.execute_fixed_parameter_circuit` so execution and `SampleSet`
+decoding do not depend on `qiskit_ibm_runtime`.
 
 ## Moving From Aer To IBM Hardware
 

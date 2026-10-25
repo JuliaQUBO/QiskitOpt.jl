@@ -335,12 +335,77 @@ setup, transpilation, or submission fails before a job is returned, catch
 retains the original exception. Failure-message redaction removes
 QiskitOpt-resolved token and instance values plus obvious `token=...`,
 `instance=...`, `account_file=...`, and `crn:...` fragments, but callers should
-still keep Runtime credentials outside project artifacts. Convert a Qiskit
-count key back to QUBO variable order with:
+still keep Runtime credentials outside project artifacts. Convert a Qiskit count key back to QUBO variable order with:
 
 ```julia
 bits = QiskitOpt.QAOA.count_key_bits("0101")
 ```
+
+## Reusable QAOA Execution Hooks and Optional IQM Backend Path
+`QiskitOpt.QAOA` exposes a provider-neutral execution and count-decoding seam so fixed-parameter QAOA circuits and non-IBM Qiskit `BackendV2` targets (such as IQM Qiskit backends via `iqm.qiskit_iqm`) can run and produce scored `QUBOTools.SampleSet` results without requiring `qiskit_ibm_runtime` or adding mandatory IQM dependencies to `CondaPkg.toml`.
+
+### Decoding Measurement Counts into a `SampleSet`
+Use `QAOA.decode_counts_sampleset` when a circuit was executed on an external backend or custom runner and you want a `SampleSet` scored against the original QUBO (preserving variable order, transpiler layout/classical-bit permutation, objective scale/offset, minimization/maximization sense, and read multiplicities):
+
+```julia
+# Optional 1-based classical-bit permutation when physical/measured bit order
+# differs from logical QUBO variable order [x1, x2, x3]:
+sampleset = QiskitOpt.QAOA.decode_counts_sampleset(
+    JuMP.unsafe_backend(model),
+    Dict("100" => 40, "011" => 24);
+    layout_permutation=[3, 1, 2],
+    backend_name="iqm_fake_adonis",
+    execution_mode="local",
+)
+```
+
+When a transpiled Qiskit circuit is available, pass `transpiled_circuit=transpiled_qc` (or call `QAOA.extract_layout_permutation(transpiled_qc; num_variables=n)`) to derive the virtual-variable-to-classical-bit permutation automatically from `transpiled_qc.layout` and its `measure` instructions.
+
+### Provider-Neutral Fixed-Parameter Execution and IQM Handoff
+To use IQM Qiskit backends (`iqm.qiskit_iqm`), install `iqm-client[qiskit]` into the active Python environment:
+
+```shell
+# Inside the active PythonCall/CondaPkg environment:
+pip install "iqm-client[qiskit]"
+```
+
+Check optional IQM Python availability with:
+
+```julia
+diagnostics = QiskitOpt.check_runtime(; local_backend=true, ibm=false, iqm=true)
+diagnostics.iqm_runtime
+```
+
+For remote IQM Resonance / IQM Server hardware, configure credentials through standard IQM environment variables (or keyword arguments) rather than storing secrets in project files:
+- `IQM_SERVER_URL` (for example `https://cocos.resonance.meetiqm.com/garnet`)
+- `IQM_TOKEN` or `IQM_TOKENS_FILE`
+
+Prepare or execute a fixed-parameter QAOA circuit for IQM with `QAOA.iqm_runtime_handoff` (dry-run by default, redacting `IQM_TOKEN`, `IQM_TOKENS_FILE`, and `IQM_SERVER_URL`) or run end-to-end with `QAOA.execute_fixed_parameter_circuit`:
+
+```julia
+# Credential-free dry-run metadata for an IQM handoff:
+iqm_dry_run = QiskitOpt.QAOA.iqm_runtime_handoff(
+    circuit;
+    fixed_metadata=metadata,
+    server_url="https://cocos.resonance.meetiqm.com/garnet",
+    quantum_computer="garnet",
+    shots=4096,
+    transpiler_seed=73001,
+)
+
+# Execute a fixed-parameter QAOA circuit on an IQM fake/real backend or custom BackendV2:
+exec_result = QiskitOpt.QAOA.execute_fixed_parameter_circuit(
+    JuMP.unsafe_backend(model);
+    parameters=qaoa_parameters,
+    reps=2,
+    backend="IQMFakeAdonis", # or an IQMBackend / BackendV2 object
+    shots=1024,
+    transpiler_seed=73001,
+)
+exec_result.sampleset
+```
+
+You can also override final-circuit sampling in `QAOA.Optimizer` with `QAOA.CircuitExecutor()` (for example `QAOA.backend_run_executor` or a custom `(circuit, backend; shots) -> counts` callback).
 
 ## Configuring Local Aer
 Both `QAOA.Optimizer` and `VQE.Optimizer` expose the same Aer local-simulation attributes. They apply when the optimizer builds the default local backend, and also when `IBMBackend()` is combined with `IsLocal() == true` to emulate a named IBM backend through Aer.

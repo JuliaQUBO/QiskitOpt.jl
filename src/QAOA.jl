@@ -1,6 +1,6 @@
 module QAOA
 
-using PythonCall: PyException, pyconvert, pylist, pydict, pyint, pylen, pystr, @pyexec
+using PythonCall: Py, PyException, pybuiltins, pyconvert, pyhasattr, pyis, pylist, pydict, pyint, pylen, pystr, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
@@ -9,6 +9,11 @@ using ..QiskitOpt:
     default_local_backend,
     effective_seed,
     empty_metadata,
+    iqm_backend,
+    iqm_qiskit,
+    iqm_server_url,
+    iqm_token,
+    iqm_tokens_file,
     preset_pass_manager,
     python_int_property,
     qiskit_parameter_names,
@@ -82,6 +87,7 @@ QUBODrivers.@setup Optimizer begin
         AerSeedSimulator["aer_seed_simulator"]::Union{Integer, Nothing} = nothing
         TranspilerSeed["transpiler_seed"]::Union{Integer, Nothing} = nothing
         PassManagerFactory["pass_manager_factory"] = nothing
+        CircuitExecutor["circuit_executor"]        = nothing
         Channel["channel"]::Union{String, Nothing} = nothing
         Instance["instance"]::Union{String, Nothing} = nothing
     end
@@ -706,8 +712,10 @@ function _redact_runtime_message(message::AbstractString, secrets)
     end
 
     redacted = replace(redacted, r"(?i)(token\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)(tokens[_ -]?file\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
     redacted = replace(redacted, r"(?i)(instance\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
     redacted = replace(redacted, r"(?i)(account[_ -]?file\s*[=:]\s*)[^\s,;]+" => s"\1[redacted]")
+    redacted = replace(redacted, r"(?i)(bearer\s+)[^\s,;]+" => s"\1[redacted]")
     redacted = replace(redacted, r"(?i)\bcrn:[^\s,;]+" => "[redacted]")
     return redacted
 end
@@ -1039,26 +1047,791 @@ function ibm_runtime_handoff(
     )
 end
 
-"""
-    QAOA.count_key_bits(key)
-
-Convert a Qiskit count key into QUBO variable order.
-
-Qiskit count dictionaries print classical bits from the highest classical-bit
-index down to zero. QiskitOpt scores samples as `[x1, x2, ...]`, so this helper
-reverses the rendered key in the same way as `QAOA.Optimizer`.
-"""
-function count_key_bits(key)
-    return sample_bits(key)
+function _check_layout_permutation(
+    layout_permutation::AbstractVector{<:Integer},
+    num_bits::Union{Integer,Nothing} = nothing,
+)
+    n = length(layout_permutation)
+    n >= 0 || throw(ArgumentError("layout_permutation length must be non-negative"))
+    perm = Int[Int(idx) for idx in layout_permutation]
+    all(idx -> idx >= 1, perm) ||
+        throw(ArgumentError("layout_permutation entries must be 1-based positive indices"))
+    length(unique(perm)) == n ||
+        throw(ArgumentError("layout_permutation must not contain duplicate classical-bit indices"))
+    if !isnothing(num_bits)
+        all(idx -> idx <= num_bits, perm) ||
+            throw(
+                ArgumentError(
+                    "layout_permutation indices $(perm) exceed available classical bits ($(num_bits))",
+                ),
+            )
+    end
+    return perm
 end
 
 """
-    QAOA.count_key_bitstring(key)
+    QAOA.extract_layout_permutation(circuit; num_variables=nothing)
 
-Convert a Qiskit count key into a bitstring in QUBO variable order.
+Inspect a Qiskit circuit (optionally transpiled) and return the 1-based classical
+bit permutation `perm` such that `perm[i]` is the 1-based measured classical-bit
+index (in reversed Qiskit count-key order) corresponding to logical QUBO
+variable `i`.
+
+Combines `circuit.layout.final_index_layout()` (virtual qubit -> physical qubit)
+with the circuit's `measure` instructions (physical qubit -> classical bit).
+Falls back to `collect(1:n)` when no layout or measurement remapping is present.
 """
-function count_key_bitstring(key)
-    return join(count_key_bits(key))
+function extract_layout_permutation(circuit; num_variables::Union{Integer,Nothing} = nothing)
+    n = if !isnothing(num_variables)
+        Int(num_variables)
+    else
+        try
+            pyconvert(Int, circuit.num_clbits)
+        catch
+            0
+        end
+    end
+    n <= 0 && return Int[]
+
+    phys_to_clbit = Dict{Int,Int}()
+    try
+        for instruction in circuit.data
+            _instruction_operation_name(instruction) == "measure" || continue
+            qubits = getproperty(instruction, :qubits)
+            clbits = getproperty(instruction, :clbits)
+            m = min(Int(pylen(qubits)), Int(pylen(clbits)))
+            for idx in 0:(m - 1)
+                q_idx = pyconvert(Int, circuit.find_bit(qubits[idx]).index)
+                c_idx = pyconvert(Int, circuit.find_bit(clbits[idx]).index)
+                phys_to_clbit[q_idx] = c_idx
+            end
+        end
+    catch
+    end
+
+    virt_to_phys = nothing
+    try
+        if pyhasattr(circuit, "layout")
+            layout = getproperty(circuit, :layout)
+            if !pyis(layout, pybuiltins.None) && pyhasattr(layout, "final_index_layout")
+                virt_to_phys = pyconvert(Vector{Int}, layout.final_index_layout())
+            end
+        end
+    catch
+    end
+
+    perm = Vector{Int}(undef, n)
+    for i in 1:n
+        phys_q = if !isnothing(virt_to_phys) && i <= length(virt_to_phys)
+            virt_to_phys[i]
+        else
+            i - 1
+        end
+        c_idx = get(phys_to_clbit, phys_q, i - 1)
+        perm[i] = c_idx + 1
+    end
+
+    if length(unique(perm)) != n
+        return collect(1:n)
+    end
+    return perm
+end
+
+"""
+    QAOA.count_key_bits(key; layout_permutation=nothing)
+
+Convert a Qiskit or IQM count key into QUBO variable order `[x1, x2, ...]`.
+
+Qiskit count dictionaries print classical bits from the highest classical-bit
+index down to zero. This helper reverses the rendered key and, when
+`layout_permutation` is provided, maps logical variable `i` from the
+`layout_permutation[i]`-th measured classical bit (1-based after reversal).
+"""
+function count_key_bits(key; layout_permutation = nothing)
+    raw_bits = sample_bits(key)
+    isnothing(layout_permutation) && return raw_bits
+    perm = _check_layout_permutation(layout_permutation, length(raw_bits))
+    return Int[raw_bits[idx] for idx in perm]
+end
+
+"""
+    QAOA.count_key_bitstring(key; layout_permutation=nothing)
+
+Convert a Qiskit or IQM count key into a bitstring in QUBO variable order.
+"""
+function count_key_bitstring(key; layout_permutation = nothing)
+    return join(count_key_bits(key; layout_permutation=layout_permutation))
+end
+
+function _normalize_counts_dict(counts)
+    normalized = Pair{String,Int}[]
+    if counts isa AbstractDict
+        for (k, v) in counts
+            reads = Int(v)
+            reads < 0 && throw(ArgumentError("count multiplicity for key $(repr(k)) must be non-negative"))
+            reads == 0 && continue
+            push!(normalized, String(k) => reads)
+        end
+        return normalized
+    elseif counts isa AbstractVector{<:Pair}
+        for (k, v) in counts
+            reads = Int(v)
+            reads < 0 && throw(ArgumentError("count multiplicity for key $(repr(k)) must be non-negative"))
+            reads == 0 && continue
+            push!(normalized, String(k) => reads)
+        end
+        return normalized
+    end
+
+    try
+        for key in counts.keys()
+            key_str = pyconvert(String, pystr(key))
+            reads = pyconvert(Int, counts[key])
+            reads < 0 && throw(ArgumentError("count multiplicity for key $(repr(key_str)) must be non-negative"))
+            reads == 0 && continue
+            push!(normalized, key_str => reads)
+        end
+        return normalized
+    catch err
+        err isa ArgumentError && rethrow()
+        throw(ArgumentError("counts must be a Julia AbstractDict or Python count dictionary"))
+    end
+end
+
+function _decode_counts_entries(
+    counts,
+    num_variables::Integer;
+    layout_permutation = nothing,
+)
+    entries = _normalize_counts_dict(counts)
+    isempty(entries) && throw(ArgumentError("counts must contain at least one positive measurement count"))
+
+    perm = if isnothing(layout_permutation)
+        nothing
+    else
+        checked = _check_layout_permutation(layout_permutation)
+        length(checked) == num_variables ||
+            throw(
+                ArgumentError(
+                    "layout_permutation length $(length(checked)) must match QUBO variable count $(num_variables)",
+                ),
+            )
+        checked
+    end
+    ordered_states = Vector{Int}[]
+    aggregated_reads = Dict{Vector{Int},Int}()
+
+    for (key, reads) in entries
+        state = count_key_bits(key; layout_permutation=perm)
+        if length(state) != num_variables
+            throw(
+                ArgumentError(
+                    "decoded bitstring length $(length(state)) for count key $(repr(key)) " *
+                    "does not match QUBO variable count $(num_variables)",
+                ),
+            )
+        end
+        if !haskey(aggregated_reads, state)
+            push!(ordered_states, state)
+            aggregated_reads[state] = reads
+        else
+            aggregated_reads[state] += reads
+        end
+    end
+
+    return Pair{Vector{Int},Int}[state => aggregated_reads[state] for state in ordered_states]
+end
+
+"""
+    QAOA.decode_counts_sampleset(source, counts; layout_permutation=nothing, transpiled_circuit=nothing, backend_name="custom_backend", backend_version=nothing, execution_mode="local", algorithm_name="QAOA", effective_time=0.0, total_time=effective_time, extra_metadata=nothing)
+
+Decode a dictionary of circuit measurement counts into a `QUBOTools.SampleSet`
+evaluated against `source` (`MOI.ModelLike` or `QUBODrivers.AbstractSampler`)
+without requiring `qiskit_ibm_runtime`.
+
+Preserves QUBO variable ordering, transpiler layout / classical-bit permutation,
+objective scale (`α`) and offset (`β`), minimization/maximization sense, and
+read multiplicities.
+"""
+function decode_counts_sampleset(
+    source::MOI.ModelLike,
+    counts;
+    layout_permutation = nothing,
+    transpiled_circuit = nothing,
+    backend_name::AbstractString = "custom_backend",
+    backend_version::Union{AbstractString,Nothing} = nothing,
+    execution_mode::AbstractString = "local",
+    algorithm_name::AbstractString = "QAOA",
+    effective_time::Real = 0.0,
+    total_time::Real = effective_time,
+    extra_metadata::Union{AbstractDict,Nothing} = nothing,
+)
+    sampler = _fixed_parameter_sampler(source)
+    return _decode_counts_sampleset_from_sampler(
+        sampler,
+        counts;
+        layout_permutation=layout_permutation,
+        transpiled_circuit=transpiled_circuit,
+        backend_name=backend_name,
+        backend_version=backend_version,
+        execution_mode=execution_mode,
+        algorithm_name=algorithm_name,
+        effective_time=effective_time,
+        total_time=total_time,
+        extra_metadata=extra_metadata,
+    )
+end
+
+function _decode_counts_sampleset_from_sampler(
+    sampler::QUBODrivers.AbstractSampler{T},
+    counts;
+    layout_permutation = nothing,
+    transpiled_circuit = nothing,
+    backend_name::AbstractString = "custom_backend",
+    backend_version::Union{AbstractString,Nothing} = nothing,
+    execution_mode::AbstractString = "local",
+    algorithm_name::AbstractString = "QAOA",
+    effective_time::Real = 0.0,
+    total_time::Real = effective_time,
+    extra_metadata::Union{AbstractDict,Nothing} = nothing,
+) where {T}
+    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+
+    resolved_permutation = if !isnothing(layout_permutation)
+        _check_layout_permutation(layout_permutation)
+    elseif !isnothing(transpiled_circuit) && n > 0
+        extract_layout_permutation(transpiled_circuit; num_variables=n)
+    else
+        nothing
+    end
+
+    decoded_entries = _decode_counts_entries(counts, n; layout_permutation=resolved_permutation)
+    samples = QUBOTools.Sample{T,Int}[]
+    total_reads = 0
+
+    for (state, reads) in decoded_entries
+        raw_value = QUBOTools.value(state, L, Q, α, β)
+        value = sense == MOI.MAX_SENSE ? -raw_value : raw_value
+        push!(samples, QUBOTools.Sample{T,Int}(state, value, reads))
+        total_reads += reads
+    end
+
+    metadata = empty_metadata(
+        algorithm_name,
+        backend_name,
+        execution_mode;
+        backend_version=backend_version,
+        backend_config_source="count_decoding_hook",
+        number_of_reads=total_reads,
+        final_number_of_reads=total_reads,
+    )
+    metadata["time"]["effective"] = Float64(effective_time)
+    metadata["time"]["total"] = Float64(total_time)
+    metadata["count_decoding"] = Dict{String,Any}(
+        "variable_count" => n,
+        "layout_permutation" => isnothing(resolved_permutation) ? collect(1:n) : resolved_permutation,
+        "layout_permutation_source" => if !isnothing(layout_permutation)
+            "explicit"
+        elseif !isnothing(transpiled_circuit)
+            "transpiled_circuit"
+        else
+            "identity"
+        end,
+        "objective_sense" => _objective_sense_name(sense),
+        "scale" => α,
+        "offset" => β,
+        "total_reads" => total_reads,
+        "unique_states" => length(samples),
+    )
+
+    if !isnothing(extra_metadata)
+        for (k, v) in extra_metadata
+            metadata[String(k)] = deepcopy(v)
+        end
+    end
+
+    return SampleSet{T}(samples, metadata)
+end
+
+function _extract_counts_from_execution_output(output)
+    output isa AbstractDict && return output
+    output isa AbstractVector{<:Pair} && return output
+
+    # Handle (job, counts) or NamedTuple with :counts / :result / :job
+    if output isa NamedTuple
+        if haskey(output, :counts) && !isnothing(output.counts)
+            val = output.counts
+            return val isa Function ? val() : val
+        end
+        if haskey(output, :get_counts) && !isnothing(output.get_counts)
+            val = output.get_counts
+            return val isa Function ? val() : val
+        end
+        if haskey(output, :result) && !isnothing(output.result)
+            val = output.result
+            res = val isa Function ? val() : val
+            return _extract_counts_from_execution_output(res)
+        end
+        if haskey(output, :job) && !isnothing(output.job)
+            val = output.job
+            jb = val isa Function ? val() : val
+            return _extract_counts_from_execution_output(jb)
+        end
+    end
+
+    # Try .get_counts() directly (Qiskit Result or Julia mock result)
+    try
+        get_counts_fn = getproperty(output, :get_counts)
+        return get_counts_fn()
+    catch
+    end
+
+    # Try .result() -> .get_counts() or SamplerV2 PrimitiveResult
+    try
+        result_fn = getproperty(output, :result)
+        res = result_fn()
+        try
+            return getproperty(res, :get_counts)()
+        catch
+        end
+        try
+            return res[0].data.meas.get_counts()
+        catch
+        end
+    catch
+    end
+
+    # Try Python dict with .keys()
+    try
+        _ = output.keys()
+        return output
+    catch
+    end
+
+    throw(ArgumentError("unable to extract measurement counts from execution output of type $(typeof(output))"))
+end
+
+"""
+    QAOA.backend_run_executor(circuit, backend; shots=1024)
+
+Execute a measured QAOA circuit on a Qiskit or IQM `BackendV2` object using
+`backend.run(circuit, shots=shots)` without requiring `qiskit_ibm_runtime`.
+Returns a NamedTuple `(job=job, counts=counts)`.
+"""
+function backend_run_executor(circuit, backend; shots::Integer = 1024)
+    shot_count = _check_runtime_shots(shots)
+    run_fn = getproperty(backend, :run)
+    job = if backend isa Py
+        run_fn(circuit; shots=pyint(shot_count))
+    else
+        try
+            run_fn(circuit; shots=shot_count)
+        catch err
+            err isa MethodError || rethrow()
+            run_fn(circuit, shot_count)
+        end
+    end
+    counts = _extract_counts_from_execution_output(job)
+    return (job=job, counts=counts)
+end
+
+function _run_circuit_with_hook(circuit, backend; shots::Integer, executor = nothing)
+    shot_count = _check_runtime_shots(shots)
+    if !isnothing(executor)
+        raw_out = try
+            executor(circuit, backend; shots=shot_count)
+        catch err
+            err isa MethodError || rethrow()
+            executor(circuit, backend, shot_count)
+        end
+        job = raw_out isa NamedTuple && haskey(raw_out, :job) ? raw_out.job : nothing
+        counts = _extract_counts_from_execution_output(raw_out)
+        return (job=job, counts=counts, execution_path="custom_executor")
+    end
+
+    has_run = if backend isa Py
+        pyhasattr(backend, "run")
+    else
+        hasproperty(backend, :run)
+    end
+    if has_run
+        out = backend_run_executor(circuit, backend; shots=shot_count)
+        return (job=out.job, counts=out.counts, execution_path="backend_run")
+    end
+
+    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
+    job = qiskit_sampler.run(pylist([circuit]), shots=pyint(shot_count))
+    counts = job.result()[0].data.meas.get_counts()
+    return (job=job, counts=counts, execution_path="ibm_runtime_sampler_v2")
+end
+
+function _transpile_with_fallback(
+    circuit,
+    backend;
+    pass_manager_factory = nothing,
+    optimization_level::Union{Integer,Nothing} = 3,
+    seed_transpiler = nothing,
+)
+    isnothing(optimization_level) && return (
+        circuit = circuit,
+        source = "skipped",
+        optimization_level = nothing,
+    )
+    checked_level = _check_optimization_level(optimization_level)
+    checked_seed = _check_transpiler_seed(seed_transpiler)
+
+    if !isnothing(pass_manager_factory)
+        pm_sel = _selected_pass_manager(
+            backend;
+            factory=pass_manager_factory,
+            optimization_level=checked_level,
+            seed_transpiler=checked_seed,
+        )
+        return (
+            circuit = pm_sel.pass_manager.run(circuit),
+            source = pm_sel.source,
+            optimization_level = pm_sel.optimization_level,
+        )
+    end
+
+    # If `backend` is a lightweight Julia mock backend without Qiskit Target, skip Qiskit preset transpilation
+    if !(backend isa Py) && !hasproperty(backend, :target)
+        return (
+            circuit = circuit,
+            source = "untranspiled_mock_backend",
+            optimization_level = checked_level,
+        )
+    end
+
+    pm_sel = _selected_pass_manager(
+        backend;
+        factory=nothing,
+        optimization_level=checked_level,
+        seed_transpiler=checked_seed,
+    )
+    return (
+        circuit = pm_sel.pass_manager.run(circuit),
+        source = pm_sel.source,
+        optimization_level = pm_sel.optimization_level,
+    )
+end
+
+"""
+    QAOA.execute_fixed_parameter_circuit(source; parameters, reps=nothing, number_of_layers=nothing, parameter_order=:beta_then_gamma, backend=nothing, shots=1024, transpiler_seed=nothing, optimization_level=3, pass_manager_factory=nothing, layout_permutation=nothing, executor=nothing, execution_mode="local")
+
+Build a fixed-parameter QAOA circuit from `source`, transpile it for `backend`
+(when applicable), execute it through `executor` or `backend.run(circuit; shots=shots)`,
+and decode the resulting measurement counts into a `QUBOTools.SampleSet` via
+`QAOA.decode_counts_sampleset`.
+
+This execution seam does not require `qiskit_ibm_runtime` and supports IQM
+backends (`iqm.qiskit_iqm`), fake backends, local Aer, and custom/mock backend
+adapters.
+"""
+function execute_fixed_parameter_circuit(
+    source::MOI.ModelLike;
+    parameters,
+    reps = nothing,
+    number_of_layers = nothing,
+    parameter_order::Symbol = :beta_then_gamma,
+    backend = nothing,
+    shots::Integer = 1024,
+    transpiler_seed::Union{Integer,Nothing} = nothing,
+    optimization_level::Union{Integer,Nothing} = 3,
+    pass_manager_factory = nothing,
+    layout_permutation = nothing,
+    executor = nothing,
+    execution_mode::AbstractString = "local",
+)
+    shot_count = _check_runtime_shots(shots)
+    circuit, fixed_metadata = fixed_parameter_circuit(
+        source;
+        parameters=parameters,
+        reps=reps,
+        number_of_layers=number_of_layers,
+        parameter_order=parameter_order,
+        measure=true,
+    )
+
+    target_backend = if isnothing(backend)
+        default_local_backend()
+    elseif backend isa Function || backend isa AbstractString || backend isa Symbol
+        iqm_backend(backend)
+    else
+        backend
+    end
+
+    timed_exec = @timed begin
+        transpiled = _transpile_with_fallback(
+            circuit,
+            target_backend;
+            pass_manager_factory=pass_manager_factory,
+            optimization_level=optimization_level,
+            seed_transpiler=transpiler_seed,
+        )
+        run_res = _run_circuit_with_hook(
+            transpiled.circuit,
+            target_backend;
+            shots=shot_count,
+            executor=executor,
+        )
+        (transpiled=transpiled, run_res=run_res)
+    end
+
+    transpiled = timed_exec.value.transpiled
+    run_res = timed_exec.value.run_res
+    b_name = backend_name(target_backend)
+    b_ver = backend_version(target_backend)
+
+    extra_meta = Dict{String,Any}(
+        "fixed_parameter_circuit" => _safe_fixed_parameter_metadata(fixed_metadata),
+        "execution_hook" => Dict{String,Any}(
+            "execution_path" => run_res.execution_path,
+            "transpilation_source" => transpiled.source,
+            "optimization_level" => transpiled.optimization_level,
+            "transpiler_seed" => transpiler_seed,
+        ),
+    )
+
+    sampleset = decode_counts_sampleset(
+        source,
+        run_res.counts;
+        layout_permutation=layout_permutation,
+        transpiled_circuit=transpiled.circuit,
+        backend_name=b_name,
+        backend_version=b_ver,
+        execution_mode=execution_mode,
+        effective_time=timed_exec.time,
+        total_time=timed_exec.time,
+        extra_metadata=extra_meta,
+    )
+
+    return (
+        sampleset=sampleset,
+        counts=run_res.counts,
+        transpiled_circuit=transpiled.circuit,
+        job=run_res.job,
+        metadata=QUBOTools.metadata(sampleset),
+    )
+end
+
+function _iqm_handoff_package_versions(; allow_import::Bool = false)
+    iqm_ver = if allow_import || iqm_qiskit.cache[] !== nothing
+        _python_package_version(iqm_qiskit)
+    else
+        nothing
+    end
+    return Dict{String,Any}(
+        "QiskitOpt" => _julia_package_version(),
+        "qiskit" => _python_package_version(qiskit),
+        "iqm.qiskit_iqm" => iqm_ver,
+    )
+end
+
+function _iqm_handoff_backend_label(backend, server_url, quantum_computer)
+    if backend isa AbstractString || backend isa Symbol
+        label = strip(String(backend))
+        !isempty(label) && return label
+    elseif !isnothing(backend) && !(backend isa Function)
+        return backend_name(backend)
+    end
+    qc = isnothing(quantum_computer) ? nothing : strip(String(quantum_computer))
+    !isnothing(qc) && !isempty(qc) && return "iqm_$(qc)"
+    !isnothing(iqm_server_url(server_url)) && return "iqm_server"
+    return "iqm_backend"
+end
+
+function _iqm_handoff_metadata(;
+    fixed_metadata,
+    backend_label::AbstractString,
+    server_url::Union{Nothing,AbstractString},
+    quantum_computer::Union{Nothing,AbstractString},
+    shots::Integer,
+    transpiler_seed::Union{Integer,Nothing},
+    optimization_level::Union{Integer,Nothing},
+    dry_run::Bool,
+    layout_permutation = nothing,
+)
+    resolved_url = iqm_server_url(server_url)
+    resolved_token = iqm_token()
+    resolved_tokens_file = iqm_tokens_file()
+
+    return Dict{String,Any}(
+        "iqm_handoff" => Dict{String,Any}(
+            "provider" => "iqm",
+            "python_package" => "iqm-client[qiskit]",
+            "python_module" => "iqm.qiskit_iqm",
+            "mode" => dry_run ? "dry_run" : "live",
+            "status" => dry_run ? "dry_run" : "preparing_submission",
+            "backend" => String(backend_label),
+            "quantum_computer" => isnothing(quantum_computer) ? nothing : String(quantum_computer),
+            "server_url_configured" => !isnothing(resolved_url),
+            "token_configured" => !isnothing(resolved_token),
+            "tokens_file_configured" => !isnothing(resolved_tokens_file),
+            "shots" => Int(shots),
+            "optimization_level" => optimization_level,
+            "transpiler_seed" => transpiler_seed,
+            "credentials_recorded" => false,
+            "credential_fields_omitted" => ["token", "tokens_file", "server_url", "auth_header"],
+        ),
+        "fixed_parameter_circuit" => _safe_fixed_parameter_metadata(fixed_metadata),
+        "count_scoring" => Dict{String,Any}(
+            "count_key_order" =>
+                "Qiskit/IQM count keys print classical bits from highest to lowest index",
+            "bit_conversion" => "QAOA.count_key_bits",
+            "sampleset_decoder" => "QAOA.decode_counts_sampleset",
+            "layout_permutation" => isnothing(layout_permutation) ? nothing : collect(Int, layout_permutation),
+            "value_convention" =>
+                "QUBOTools.value(bits, linear, quadratic, scale, offset)",
+        ),
+        "packages" => _iqm_handoff_package_versions(; allow_import=!dry_run),
+    )
+end
+
+"""
+    QAOA.iqm_runtime_handoff(circuit; fixed_metadata=nothing, backend=nothing, server_url=nothing, quantum_computer=nothing, shots=1024, dry_run=true, transpiler_seed=nothing, optimization_level=3, pass_manager_factory=nothing, layout_permutation=nothing, decode_source=nothing, executor=nothing)
+
+Prepare or execute a fixed-parameter QAOA circuit on an IQM Qiskit backend
+(`iqm.qiskit_iqm` from `iqm-client[qiskit]`) without coupling to
+`qiskit_ibm_runtime`.
+
+When `dry_run=true` (default), no IQM server connection or `iqm-client` import
+is required; sanitized handoff metadata is returned with `IQM_TOKEN`,
+`IQM_TOKENS_FILE`, and `IQM_SERVER_URL` omitted.
+
+When `dry_run=false`, resolves the IQM backend (from a passed backend/fake-backend
+object, factory, fake backend name such as `"IQMFakeAdonis"`, or
+`IQMProvider(server_url; quantum_computer=...)`), transpiles the circuit, executes
+it with `shots`, and optionally decodes a `QUBOTools.SampleSet` when
+`decode_source` (`MOI.ModelLike` or `QUBODrivers.AbstractSampler`) is provided.
+Failures before submission throw `QAOA.RuntimeHandoffError` with redacted
+metadata.
+"""
+function iqm_runtime_handoff(
+    circuit;
+    fixed_metadata = nothing,
+    backend = nothing,
+    server_url::Union{Nothing,AbstractString} = nothing,
+    quantum_computer::Union{Nothing,AbstractString} = nothing,
+    shots::Integer = 1024,
+    dry_run::Bool = true,
+    transpiler_seed::Union{Integer,Nothing} = nothing,
+    optimization_level::Union{Integer,Nothing} = 3,
+    pass_manager_factory = nothing,
+    layout_permutation = nothing,
+    decode_source = nothing,
+    executor = nothing,
+)
+    _check_measured_circuit(circuit)
+    if backend isa AbstractString && isempty(strip(backend))
+        throw(ArgumentError("backend must be non-empty when provided as a String"))
+    end
+    shot_count = _check_runtime_shots(shots)
+    checked_seed = _check_transpiler_seed(transpiler_seed)
+    checked_optimization_level =
+        isnothing(optimization_level) ? nothing : _check_optimization_level(optimization_level)
+    checked_perm =
+        isnothing(layout_permutation) ? nothing : _check_layout_permutation(layout_permutation)
+
+    backend_label = _iqm_handoff_backend_label(backend, server_url, quantum_computer)
+    metadata = _iqm_handoff_metadata(
+        fixed_metadata=fixed_metadata,
+        backend_label=backend_label,
+        server_url=server_url,
+        quantum_computer=quantum_computer,
+        shots=shot_count,
+        transpiler_seed=checked_seed,
+        optimization_level=checked_optimization_level,
+        dry_run=dry_run,
+        layout_permutation=checked_perm,
+    )
+
+    if dry_run
+        return (
+            metadata=metadata,
+            transpiled_circuit=nothing,
+            job=nothing,
+            counts=nothing,
+            sampleset=nothing,
+        )
+    end
+
+    target_backend = transpiled_circuit = job = counts = sampleset = nothing
+    try
+        target_backend = iqm_backend(
+            backend;
+            server_url=server_url,
+            quantum_computer=quantum_computer,
+        )
+        metadata["iqm_handoff"]["backend"] = backend_name(target_backend)
+        transpiled = _transpile_with_fallback(
+            circuit,
+            target_backend;
+            pass_manager_factory=pass_manager_factory,
+            optimization_level=checked_optimization_level,
+            seed_transpiler=checked_seed,
+        )
+        transpiled_circuit = transpiled.circuit
+        run_res = _run_circuit_with_hook(
+            transpiled_circuit,
+            target_backend;
+            shots=shot_count,
+            executor=executor,
+        )
+        job = run_res.job
+        counts = run_res.counts
+        if !isnothing(decode_source)
+            sampleset = decode_counts_sampleset(
+                decode_source,
+                counts;
+                layout_permutation=checked_perm,
+                transpiled_circuit=transpiled_circuit,
+                backend_name=backend_name(target_backend),
+                backend_version=backend_version(target_backend),
+                execution_mode="local",
+                extra_metadata=Dict{String,Any}("iqm_handoff" => deepcopy(metadata["iqm_handoff"])),
+            )
+        end
+    catch err
+        handoff = metadata["iqm_handoff"]
+        handoff["status"] = "failed_before_submission"
+        handoff["failure"] = Dict{String,Any}(
+            "exception_type" => _resource_audit_exception_type(err),
+            "message" => _redact_runtime_message(
+                sprint(showerror, err),
+                (
+                    runtime_token(),
+                    runtime_instance(),
+                    iqm_token(),
+                    iqm_tokens_file(),
+                    iqm_server_url(server_url),
+                ),
+            ),
+            "package_hint" =>
+                "Install 'iqm-client[qiskit]' into the active Python environment and set IQM_TOKEN or IQM_TOKENS_FILE for remote IQM Resonance backends",
+        )
+        # Mirror runtime_handoff failure key so RuntimeHandoffError showerror formats cleanly
+        metadata["runtime_handoff"] = handoff
+        throw(RuntimeHandoffError(metadata, err))
+    end
+
+    handoff = metadata["iqm_handoff"]
+    handoff["status"] = "submitted"
+    if !isnothing(job)
+        handoff["job"] = Dict{String,Any}(
+            "id" => _python_call_string(job, :job_id),
+            "status" => _python_call_string(job, :status),
+        )
+    end
+
+    return (
+        metadata=metadata,
+        transpiled_circuit=transpiled_circuit,
+        job=job,
+        counts=counts,
+        sampleset=sampleset,
+    )
 end
 
 """
@@ -1222,21 +1995,20 @@ end
 
 function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Retrieve Model
-    _, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
+    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
     sense = MOI.get(sampler, MOI.ObjectiveSense())
 
     # Results vector
     samples = QUBOTools.Sample{T,Int}[]
 
     retrieve_results = @timed retrieve(sampler) do _, sample_results
-        for key in sample_results.keys()
-            state = sample_bits(key)
+        for (state, reads) in _decode_counts_entries(sample_results, n)
             objective_value = QUBOTools.value(state, L, Q, α, β)
             sample = QUBOTools.Sample{T,Int}(
                 state,
                 sense == MOI.MAX_SENSE ? -objective_value : objective_value,
-                pyconvert(Int, sample_results[key]),
-            )   
+                reads,
+            )
             push!(samples, sample)
         end
 
@@ -1267,6 +2039,7 @@ function retrieve(
     record_initial_parameters = MOI.get(sampler, QAOA.RecordInitialParameters())
     is_local         = MOI.get(sampler, QAOA.IsLocal())
     pass_manager_factory = MOI.get(sampler, QAOA.PassManagerFactory())
+    circuit_executor = MOI.get(sampler, QAOA.CircuitExecutor())
     seed_simulator = effective_seed(MOI.get(sampler, QAOA.AerSeedSimulator()), sampler_seed, 1)
     seed_transpiler = effective_seed(MOI.get(sampler, QAOA.TranspilerSeed()), sampler_seed, 2)
     aer_config = AerBackendConfig(
@@ -1361,9 +2134,18 @@ function retrieve(
     qc.measure_all()
     optimized_qc = pass_manager.run(qc)
 
-    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-    sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(final_num_reads)).result()[0]
-    samples = sampling_result.data.meas.get_counts()
+    samples = if !isnothing(circuit_executor)
+        _run_circuit_with_hook(
+            optimized_qc,
+            backend;
+            shots=final_num_reads,
+            executor=circuit_executor,
+        ).counts
+    else
+        qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
+        sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(final_num_reads)).result()[0]
+        sampling_result.data.meas.get_counts()
+    end
 
     callback(result, samples)
 
