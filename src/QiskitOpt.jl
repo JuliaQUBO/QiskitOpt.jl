@@ -57,6 +57,7 @@ Base.@kwdef struct RuntimeDiagnostics
     packages::Dict{String,RuntimeDiagnostic}
     local_backend::Union{Nothing,RuntimeDiagnostic} = nothing
     ibm_runtime::Union{Nothing,RuntimeDiagnostic} = nothing
+    iqm_runtime::Union{Nothing,RuntimeDiagnostic} = nothing
 end
 
 struct LazyPythonModule
@@ -132,9 +133,11 @@ const qiskit_optimization_algorithms = LazyPythonModule("qiskit_optimization.alg
 const qiskit_optimization_utils      = LazyPythonModule("qiskit_optimization.utils", "qiskit-optimization")
 const qiskit_ibm_runtime             = LazyPythonModule("qiskit_ibm_runtime", "qiskit-ibm-runtime")
 const qiskit_aer                     = LazyPythonModule("qiskit_aer", "qiskit-aer")
+const iqm_qiskit                     = LazyPythonModule("iqm.qiskit_iqm", "iqm-client[qiskit]")
 const scipy                          = LazyPythonModule("scipy", "scipy")
 const numpy                          = LazyPythonModule("numpy", "numpy")
 const _runtime_service_builder = Ref{Function}()
+const _iqm_provider_builder    = Ref{Function}()
 const DEFAULT_AER_BACKEND_METHOD = "matrix_product_state"
 const _LOCAL_SOLVER_PRIMITIVES_NOTE =
     "QAOA/VQE local solves still use qiskit_ibm_runtime EstimatorV2/SamplerV2; pass ibm=true to verify those primitives."
@@ -193,11 +196,13 @@ function __init__()
             qiskit_optimization_utils,
             qiskit_ibm_runtime,
             qiskit_aer,
+            iqm_qiskit,
             scipy,
             numpy,
         ),
     )
     _runtime_service_builder[] = default_runtime_service
+    _iqm_provider_builder[] = default_iqm_provider
 end
 
 function _diagnostic_error_message(err)
@@ -307,10 +312,19 @@ function _print_runtime_diagnostics(io::IO, result::RuntimeDiagnostics)
     if !isnothing(result.ibm_runtime)
         _print_runtime_diagnostic(io, "IBM Runtime", result.ibm_runtime)
     end
+    if !isnothing(result.iqm_runtime)
+        _print_runtime_diagnostic(io, "IQM Runtime", result.iqm_runtime)
+    end
     return nothing
 end
 
-function check_runtime(; local_backend::Bool=true, ibm::Bool=false, verbose::Bool=true, kwargs...)
+function check_runtime(;
+    local_backend::Bool=true,
+    ibm::Bool=false,
+    iqm::Bool=false,
+    verbose::Bool=true,
+    kwargs...
+)
     unknown_keywords = setdiff(collect(keys(kwargs)), [:local])
     if !isempty(unknown_keywords)
         throw(ArgumentError("unsupported check_runtime keyword(s): $(join(unknown_keywords, ", "))"))
@@ -336,12 +350,21 @@ function check_runtime(; local_backend::Bool=true, ibm::Bool=false, verbose::Boo
         nothing
     end
 
+    iqm_runtime = if iqm
+        _diagnose_python_module(iqm_qiskit)
+    else
+        nothing
+    end
+
     local_backend_diagnostic = local_backend ? _diagnose_local_backend() : nothing
 
     diagnostics = RuntimeDiagnostic[julia, pythoncall]
     append!(diagnostics, values(packages))
     if !isnothing(ibm_runtime)
         push!(diagnostics, ibm_runtime)
+    end
+    if !isnothing(iqm_runtime)
+        push!(diagnostics, iqm_runtime)
     end
     if !isnothing(local_backend_diagnostic)
         push!(diagnostics, local_backend_diagnostic)
@@ -354,6 +377,7 @@ function check_runtime(; local_backend::Bool=true, ibm::Bool=false, verbose::Boo
         packages=packages,
         local_backend=local_backend_diagnostic,
         ibm_runtime=ibm_runtime,
+        iqm_runtime=iqm_runtime,
     )
 
     verbose && _print_runtime_diagnostics(stdout, result)
@@ -444,6 +468,111 @@ function runtime_service(;
         token=runtime_token(),
         instance=runtime_instance(instance),
     )
+end
+
+const _IQM_FAKE_BACKENDS = (
+    "IQMFakeAdonis",
+    "IQMFakeApollo",
+    "IQMFakeAphrodite",
+    "IQMFakeDeneb",
+    "IQMFakeGarnet",
+)
+
+function iqm_server_url(server_url::Union{Nothing,AbstractString} = nothing)
+    provided = nonempty_or_nothing(server_url)
+    !isnothing(provided) && return provided
+    return nonempty_or_nothing(get(ENV, "IQM_SERVER_URL", nothing))
+end
+
+function iqm_token(token::Union{Nothing,AbstractString} = nothing)
+    provided = nonempty_or_nothing(token)
+    !isnothing(provided) && return provided
+    return nonempty_or_nothing(get(ENV, "IQM_TOKEN", nothing))
+end
+
+function iqm_tokens_file(tokens_file::Union{Nothing,AbstractString} = nothing)
+    provided = nonempty_or_nothing(tokens_file)
+    !isnothing(provided) && return provided
+    return nonempty_or_nothing(get(ENV, "IQM_TOKENS_FILE", nothing))
+end
+
+function default_iqm_provider(;
+    server_url::Union{Nothing,AbstractString} = nothing,
+    quantum_computer::Union{Nothing,AbstractString} = nothing,
+    token::Union{Nothing,AbstractString} = nothing,
+    tokens_file::Union{Nothing,AbstractString} = nothing,
+)
+    resolved_url = iqm_server_url(server_url)
+    isnothing(resolved_url) &&
+        throw(ArgumentError("IQM server_url must be provided or set via IQM_SERVER_URL"))
+
+    iqm_mod = iqm_qiskit()
+    kwargs = Pair{Symbol,Any}[]
+    _push_option!(kwargs, :quantum_computer, nonempty_or_nothing(quantum_computer))
+    _push_option!(kwargs, :token, iqm_token(token))
+    _push_option!(kwargs, :tokens_file, iqm_tokens_file(tokens_file))
+
+    return iqm_mod.IQMProvider(resolved_url; kwargs...)
+end
+
+function iqm_provider(;
+    server_url::Union{Nothing,AbstractString} = nothing,
+    quantum_computer::Union{Nothing,AbstractString} = nothing,
+    token::Union{Nothing,AbstractString} = nothing,
+    tokens_file::Union{Nothing,AbstractString} = nothing,
+)
+    return _iqm_provider_builder[](
+        server_url=iqm_server_url(server_url),
+        quantum_computer=nonempty_or_nothing(quantum_computer),
+        token=iqm_token(token),
+        tokens_file=iqm_tokens_file(tokens_file),
+    )
+end
+
+function iqm_fake_backend(name::Union{AbstractString,Symbol} = "IQMFakeAdonis")
+    label = strip(String(name))
+    isempty(label) && throw(ArgumentError("IQM fake backend name must be non-empty"))
+    normalized = startswith(label, "IQMFake") ? label : "IQMFake" * uppercasefirst(lowercase(label))
+    iqm_mod = iqm_qiskit()
+    factory = getproperty(iqm_mod, Symbol(normalized))
+    return factory()
+end
+
+function iqm_backend(
+    backend_or_url = nothing;
+    server_url::Union{Nothing,AbstractString} = nothing,
+    quantum_computer::Union{Nothing,AbstractString} = nothing,
+    token::Union{Nothing,AbstractString} = nothing,
+    tokens_file::Union{Nothing,AbstractString} = nothing,
+)
+    if backend_or_url isa Function
+        return backend_or_url()
+    elseif backend_or_url isa Symbol || backend_or_url isa AbstractString
+        label = strip(String(backend_or_url))
+        isempty(label) && throw(ArgumentError("IQM backend specification must be non-empty"))
+        if label in _IQM_FAKE_BACKENDS || startswith(lowercase(label), "fake_") || startswith(label, "IQMFake")
+            clean_name = startswith(lowercase(label), "fake_") ? label[6:end] : label
+            return iqm_fake_backend(clean_name)
+        end
+        resolved_url = isnothing(server_url) ? label : server_url
+        provider = iqm_provider(
+            server_url=resolved_url,
+            quantum_computer=quantum_computer,
+            token=token,
+            tokens_file=tokens_file,
+        )
+        return provider.get_backend()
+    elseif isnothing(backend_or_url)
+        provider = iqm_provider(
+            server_url=server_url,
+            quantum_computer=quantum_computer,
+            token=token,
+            tokens_file=tokens_file,
+        )
+        return provider.get_backend()
+    end
+
+    return backend_or_url
 end
 
 function _push_option!(options::Vector{Pair{Symbol,Any}}, name::Symbol, value)
@@ -572,11 +701,24 @@ function preset_pass_manager(backend; optimization_level::Integer = 3, seed_tran
 end
 
 function backend_name(backend)
-    try
-        return PythonCall.pyconvert(String, backend.name)
-    catch
-        return PythonCall.pyconvert(String, backend.backend_name)
+    for property in (:name, :backend_name)
+        try
+            val = getproperty(backend, property)
+            if val isa AbstractString
+                return String(val)
+            elseif val isa Function
+                res = val()
+                res isa AbstractString && return String(res)
+            end
+            try
+                return PythonCall.pyconvert(String, val)
+            catch
+                return PythonCall.pyconvert(String, val())
+            end
+        catch
+        end
     end
+    return string(typeof(backend))
 end
 
 function python_type_module(object)

@@ -442,11 +442,14 @@ end
     @test !isnothing(local_diagnostics.packages["qiskit"].version)
     @test !isnothing(local_diagnostics.packages["numpy"].version)
     @test isnothing(local_diagnostics.ibm_runtime)
+    @test isnothing(local_diagnostics.iqm_runtime)
     @test !haskey(local_diagnostics.packages, "qiskit_ibm_runtime")
+    @test !haskey(local_diagnostics.packages, "iqm.qiskit_iqm")
     @test !isnothing(local_diagnostics.local_backend)
     @test local_diagnostics.local_backend.ok
     @test occursin("qiskit_ibm_runtime", local_diagnostics.local_backend.message)
     @test !python_module_loaded("qiskit_ibm_runtime")
+    @test !python_module_loaded("iqm.qiskit_iqm")
 
     missing_error = try
         QiskitOpt._import_python_module(
@@ -474,9 +477,19 @@ end
 
     ibm_diagnostics = QiskitOpt.check_runtime(; local_backend=false, ibm=true, verbose=false)
     @test !isnothing(ibm_diagnostics.ibm_runtime)
+    @test isnothing(ibm_diagnostics.iqm_runtime)
     @test !haskey(ibm_diagnostics.packages, "qiskit_ibm_runtime")
     @test ibm_diagnostics.ibm_runtime.ok
     @test ibm_diagnostics.ok
+
+    iqm_diagnostics = QiskitOpt.check_runtime(; local_backend=false, ibm=false, iqm=true, verbose=false)
+    @test !isnothing(iqm_diagnostics.iqm_runtime)
+    @test iqm_diagnostics.iqm_runtime.name == "iqm.qiskit_iqm"
+    @test !haskey(iqm_diagnostics.packages, "iqm.qiskit_iqm")
+    if !iqm_diagnostics.iqm_runtime.ok
+        @test occursin("iqm-client[qiskit]", iqm_diagnostics.iqm_runtime.message)
+        @test_throws QiskitOpt.PythonPackageError QiskitOpt.iqm_qiskit()
+    end
 end
 
 @testset "Local-first execution" begin
@@ -1366,6 +1379,304 @@ end
         max_iterations=1,
         number_of_reads=8,
     )
+end
+
+@testset "Reusable QAOA execution hooks and optional IQM backend path" begin
+    # 1. Count-key bit decoding with non-trivial layout permutation
+    # Suppose count key is "100" -> reversed raw classical bits are [0, 0, 1] (c0=0, c1=0, c2=1).
+    # With layout_permutation = [3, 1, 2], variable 1 reads c2 (1), variable 2 reads c0 (0), variable 3 reads c1 (0).
+    @test QAOA.count_key_bits("100") == [0, 0, 1]
+    @test QAOA.count_key_bits("100"; layout_permutation=[3, 1, 2]) == [1, 0, 0]
+    @test QAOA.count_key_bitstring("100"; layout_permutation=[3, 1, 2]) == "100"
+    @test QAOA.count_key_bits("010"; layout_permutation=[3, 1, 2]) == [0, 0, 1]
+    @test_throws ArgumentError QAOA.count_key_bits("100"; layout_permutation=[1, 1, 2])
+    @test_throws ArgumentError QAOA.count_key_bits("100"; layout_permutation=[0, 1, 2])
+    @test_throws ArgumentError QAOA.count_key_bits("100"; layout_permutation=[4, 1, 2])
+
+    # 2. Automatic layout permutation extraction from Qiskit transpiled circuits
+    q = QiskitOpt.qiskit()
+    base_qc = q.QuantumCircuit(3)
+    base_qc.x(0)
+
+    measured_first = base_qc.copy()
+    measured_first.measure_all()
+    transpiled_measured_first = q.transpile(measured_first, initial_layout=[2, 0, 1])
+    @test QAOA.extract_layout_permutation(transpiled_measured_first; num_variables=3) == [1, 2, 3]
+
+    transpiled_unmeasured_first = q.transpile(base_qc, initial_layout=[2, 0, 1])
+    transpiled_unmeasured_first.measure_all()
+    @test QAOA.extract_layout_permutation(transpiled_unmeasured_first; num_variables=3) == [3, 1, 2]
+
+    # 3. SampleSet decoding with non-trivial permutation, scale, offset, and Min/Max sense
+    asymmetric_Q = [
+        -1.0  2.0 -0.5
+         0.0  1.5  1.0
+         0.0  0.0 -2.0
+    ]
+    asymmetric_L = [0.5, -1.25, 0.75]
+    scale = 2.5
+    offset = -1.75
+    perm = [3, 1, 2]
+    # Under perm = [3, 1, 2]:
+    # - count key "100" -> raw bits [0, 0, 1] -> logical state x = [1, 0, 0] (reads = 40)
+    # - count key "011" -> raw bits [1, 1, 0] -> logical state x = [0, 1, 1] (reads = 24)
+    raw_counts = Dict("100" => 40, "011" => 24)
+
+    for sense in (:Min, :Max)
+        model, _ = build_model(
+            QAOA.Optimizer;
+            Q=asymmetric_Q,
+            L=asymmetric_L,
+            scale=scale,
+            offset=offset,
+            sense=sense,
+        )
+        sampler = QAOA._fixed_parameter_sampler(model)
+        n, L_dense, Q_dense, α, β = QUBOTools.qubo(sampler, :dense)
+        @test n == 3
+
+        decoded = QAOA.decode_counts_sampleset(
+            model,
+            raw_counts;
+            layout_permutation=perm,
+            backend_name="iqm_fake_adonis",
+            backend_version="1.2.3",
+            execution_mode="local",
+        )
+        @test length(decoded) == 2
+        @test sum(QUBOTools.reads(s) for s in decoded) == 64
+
+        observed_by_state = Dict(
+            QUBOTools.state(s) => (value=QUBOTools.value(s), reads=QUBOTools.reads(s))
+            for s in decoded
+        )
+        @test haskey(observed_by_state, [1, 0, 0])
+        @test haskey(observed_by_state, [0, 1, 1])
+        @test observed_by_state[[1, 0, 0]].reads == 40
+        @test observed_by_state[[0, 1, 1]].reads == 24
+
+        for state in ([1, 0, 0], [0, 1, 1])
+            expected_raw = scale * (
+                state' * asymmetric_Q * state +
+                sum(asymmetric_L[i] * state[i] for i in 1:3) +
+                offset
+            )
+            expected_sample_val = sense == :Max ? -expected_raw : expected_raw
+            @test isapprox(observed_by_state[state].value, expected_sample_val; atol=1.0e-8)
+            qubotools_val = QUBOTools.value(state, L_dense, Q_dense, α, β)
+            signed_val = sense == :Max ? -qubotools_val : qubotools_val
+            @test isapprox(observed_by_state[state].value, signed_val; atol=1.0e-8)
+        end
+
+        meta = QUBOTools.metadata(decoded)
+        @test QUBODrivers.validate_metadata(meta) == String[]
+        @test meta["backend_name"] == "iqm_fake_adonis"
+        @test meta["backend"]["version"] == "1.2.3"
+        @test meta["count_decoding"]["layout_permutation"] == [3, 1, 2]
+        @test meta["count_decoding"]["layout_permutation_source"] == "explicit"
+        @test meta["count_decoding"]["scale"] ≈ α
+        @test meta["count_decoding"]["offset"] ≈ β
+        @test meta["count_decoding"]["total_reads"] == 64
+
+        # Also test automatic permutation extraction from `transpiled_circuit`
+        decoded_from_circuit = QAOA.decode_counts_sampleset(
+            model,
+            raw_counts;
+            transpiled_circuit=transpiled_unmeasured_first,
+            backend_name="iqm_fake_adonis",
+        )
+        circuit_meta = QUBOTools.metadata(decoded_from_circuit)
+        @test circuit_meta["count_decoding"]["layout_permutation"] == [3, 1, 2]
+        @test circuit_meta["count_decoding"]["layout_permutation_source"] == "transpiled_circuit"
+        for s in decoded_from_circuit
+            st = QUBOTools.state(s)
+            @test QUBOTools.value(s) ≈ observed_by_state[st].value
+            @test QUBOTools.reads(s) == observed_by_state[st].reads
+        end
+    end
+
+    @test_throws ArgumentError QAOA.decode_counts_sampleset(
+        first(build_model(QAOA.Optimizer)),
+        Dict("10" => 10),
+    )
+    @test_throws ArgumentError QAOA.decode_counts_sampleset(
+        first(build_model(QAOA.Optimizer)),
+        Dict{String,Int}(),
+    )
+
+    # 4. Credential-free IQM dry-run handoff, secret redaction, and mock IQM execution
+    model_iqm, _ = build_model(
+        QAOA.Optimizer;
+        Q=asymmetric_Q,
+        L=asymmetric_L,
+        scale=scale,
+        offset=offset,
+        sense=:Min,
+    )
+    qaoa_params = [0.31, -0.52]
+    fixed_qc, fixed_meta = QAOA.fixed_parameter_circuit(
+        model_iqm;
+        parameters=qaoa_params,
+        reps=1,
+        measure=true,
+    )
+
+    prev_iqm_builder = QiskitOpt._iqm_provider_builder[]
+    prev_ibm_builder = QiskitOpt._runtime_service_builder[]
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("IBM runtime service should not be called")
+
+    try
+        secret_iqm_token = "secret-iqm-token-issue-71"
+        secret_iqm_file = "/tmp/secret-iqm-tokens-71.json"
+        secret_iqm_url = "https://cocos.resonance.meetiqm.com/secret-garnet-71"
+
+        withenv(
+            "IQM_TOKEN" => secret_iqm_token,
+            "IQM_TOKENS_FILE" => secret_iqm_file,
+            "IQM_SERVER_URL" => secret_iqm_url,
+        ) do
+            dry_handoff = QAOA.iqm_runtime_handoff(
+                fixed_qc;
+                fixed_metadata=fixed_meta,
+                quantum_computer="garnet",
+                shots=512,
+                transpiler_seed=73001,
+                layout_permutation=perm,
+            )
+            @test dry_handoff.job === nothing
+            @test dry_handoff.counts === nothing
+            @test dry_handoff.sampleset === nothing
+            @test dry_handoff.metadata["iqm_handoff"]["mode"] == "dry_run"
+            @test dry_handoff.metadata["iqm_handoff"]["status"] == "dry_run"
+            @test dry_handoff.metadata["iqm_handoff"]["provider"] == "iqm"
+            @test dry_handoff.metadata["iqm_handoff"]["python_package"] == "iqm-client[qiskit]"
+            @test dry_handoff.metadata["iqm_handoff"]["quantum_computer"] == "garnet"
+            @test dry_handoff.metadata["iqm_handoff"]["server_url_configured"] == true
+            @test dry_handoff.metadata["iqm_handoff"]["token_configured"] == true
+            @test dry_handoff.metadata["iqm_handoff"]["tokens_file_configured"] == true
+            @test dry_handoff.metadata["iqm_handoff"]["credentials_recorded"] == false
+            @test dry_handoff.metadata["count_scoring"]["layout_permutation"] == [3, 1, 2]
+
+            dry_text = repr(dry_handoff.metadata)
+            for secret in (secret_iqm_token, secret_iqm_file, secret_iqm_url)
+                @test !occursin(secret, dry_text)
+            end
+
+            # Failure redaction when IQM provider setup fails
+            QiskitOpt._iqm_provider_builder[] = (; kwargs...) -> error(
+                "IQM auth failed token=$(secret_iqm_token) " *
+                "tokens_file=$(secret_iqm_file) " *
+                "url=$(secret_iqm_url) " *
+                "Bearer bearer-secret-71",
+            )
+            iqm_err = try
+                QAOA.iqm_runtime_handoff(
+                    fixed_qc;
+                    fixed_metadata=fixed_meta,
+                    quantum_computer="garnet",
+                    shots=512,
+                    dry_run=false,
+                )
+                nothing
+            catch err
+                err
+            end
+            @test iqm_err isa QAOA.RuntimeHandoffError
+            @test iqm_err.metadata["iqm_handoff"]["status"] == "failed_before_submission"
+            err_msg = iqm_err.metadata["iqm_handoff"]["failure"]["message"]
+            @test occursin("[redacted]", err_msg)
+            for secret in (secret_iqm_token, secret_iqm_file, secret_iqm_url, "bearer-secret-71")
+                @test !occursin(secret, err_msg)
+                @test !occursin(secret, repr(iqm_err.metadata))
+                @test !occursin(secret, sprint(showerror, iqm_err))
+            end
+
+            # Live/mock IQM provider execution with non-trivial permutation + offset QUBO
+            mock_backend_runs = Ref(0)
+            mock_iqm_backend = (
+                name = "IQMFakeAdonisBackend",
+                backend_version = "2.1.0",
+                run = (qc; shots=64) -> begin
+                    mock_backend_runs[] += 1
+                    return (
+                        job_id = () -> "iqm-mock-job-71",
+                        status = () -> "DONE",
+                        result = () -> (get_counts = () -> Dict("100" => div(shots, 2), "011" => shots - div(shots, 2)),),
+                    )
+                end,
+            )
+            QiskitOpt._iqm_provider_builder[] = (; kwargs...) -> (
+                get_backend = () -> mock_iqm_backend,
+            )
+
+            live_handoff = QAOA.iqm_runtime_handoff(
+                fixed_qc;
+                fixed_metadata=fixed_meta,
+                server_url="https://mock.iqm.local",
+                quantum_computer="adonis",
+                shots=64,
+                dry_run=false,
+                layout_permutation=perm,
+                decode_source=model_iqm,
+            )
+            @test mock_backend_runs[] == 1
+            @test live_handoff.metadata["iqm_handoff"]["status"] == "submitted"
+            @test live_handoff.metadata["iqm_handoff"]["backend"] == "IQMFakeAdonisBackend"
+            @test live_handoff.metadata["iqm_handoff"]["job"]["id"] == "iqm-mock-job-71"
+            @test live_handoff.sampleset !== nothing
+            @test sum(QUBOTools.reads(s) for s in live_handoff.sampleset) == 64
+            @test QUBODrivers.validate_metadata(QUBOTools.metadata(live_handoff.sampleset)) == String[]
+
+            # End-to-end `execute_fixed_parameter_circuit` with mock IQM backend and with local Aer
+            exec_mock = QAOA.execute_fixed_parameter_circuit(
+                model_iqm;
+                parameters=qaoa_params,
+                reps=1,
+                backend=mock_iqm_backend,
+                shots=80,
+                layout_permutation=perm,
+            )
+            @test mock_backend_runs[] == 2
+            @test sum(QUBOTools.reads(s) for s in exec_mock.sampleset) == 80
+            @test exec_mock.metadata["execution_hook"]["execution_path"] == "backend_run"
+            @test exec_mock.metadata["count_decoding"]["layout_permutation"] == [3, 1, 2]
+
+            exec_aer = QAOA.execute_fixed_parameter_circuit(
+                model_iqm;
+                parameters=qaoa_params,
+                reps=1,
+                shots=48,
+                transpiler_seed=73001,
+            )
+            @test sum(QUBOTools.reads(s) for s in exec_aer.sampleset) == 48
+            @test exec_aer.metadata["execution_hook"]["execution_path"] == "backend_run"
+            @test QUBODrivers.validate_metadata(exec_aer.metadata) == String[]
+
+            # Custom `CircuitExecutor` attribute on `QAOA.Optimizer`
+            executor_calls = Ref(0)
+            custom_sampleset = sample_locally_without_runtime_service(
+                QAOA.Optimizer,
+                QAOA,
+                (m, mod) -> begin
+                    MOI.set(
+                        m,
+                        mod.CircuitExecutor(),
+                        (qc, backend; shots=16) -> begin
+                            executor_calls[] += 1
+                            return QAOA.backend_run_executor(qc, backend; shots=shots)
+                        end,
+                    )
+                end;
+                max_iterations=1,
+                number_of_reads=24,
+            )
+            @test executor_calls[] == 1
+            @test sum(QUBOTools.reads(s) for s in custom_sampleset) == 24
+        end
+    finally
+        QiskitOpt._iqm_provider_builder[] = prev_iqm_builder
+        QiskitOpt._runtime_service_builder[] = prev_ibm_builder
+    end
 end
 
 @testset "Grover Adaptive Search (GAS) optimizer" begin
