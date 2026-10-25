@@ -10,6 +10,8 @@ MOI = QUBODrivers.MOI
 
 include("ising.jl")
 include("circuits.jl")
+include("simulator.jl")
+include("optimizer.jl")
 
 const DEFAULT_RUNTIME_CHANNEL = "ibm_quantum_platform"
 
@@ -877,7 +879,10 @@ end
 
 function python_int_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(Int, getproperty(object, name))
+        val = getproperty(object, name)
+        val isa Integer && return Int(val)
+        val === nothing && return nothing
+        return PythonCall.pyconvert(Int, val)
     catch
         return nothing
     end
@@ -885,7 +890,10 @@ end
 
 function python_float_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(Float64, getproperty(object, name))
+        val = getproperty(object, name)
+        val isa Real && return Float64(val)
+        val === nothing && return nothing
+        return PythonCall.pyconvert(Float64, val)
     catch
         return nothing
     end
@@ -893,7 +901,10 @@ end
 
 function python_bool_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(Bool, getproperty(object, name))
+        val = getproperty(object, name)
+        val isa Bool && return val
+        val === nothing && return nothing
+        return PythonCall.pyconvert(Bool, val)
     catch
         return nothing
     end
@@ -901,10 +912,17 @@ end
 
 function python_string_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(String, PythonCall.pystr(getproperty(object, name)))
+        val = getproperty(object, name)
+        val isa AbstractString && return String(val)
+        val === nothing && return nothing
+        return PythonCall.pyconvert(String, PythonCall.pystr(val))
     catch
         return nothing
     end
+end
+
+function python_float_vector(object::AbstractVector{<:Real})
+    return Float64[Float64(v) for v in object]
 end
 
 function python_float_vector(object)

@@ -48,8 +48,24 @@ struct NativeAnsatz
     end
 end
 
-num_parameters(ansatz::NativeAnsatz)::Int = length(ansatz.parameter_names)
+num_parameters(ansatz::NativeAnsatz)::Int = length(getfield(ansatz, :parameter_names))
 num_parameters(qc::Qiskit.QuantumCircuit)::Int = 0
+
+function Base.getproperty(ansatz::NativeAnsatz, sym::Symbol)
+    if sym === :assign_parameters
+        return theta -> bind_ansatz_parameters(ansatz, theta)
+    elseif sym === :parameters
+        return getfield(ansatz, :parameter_names)
+    elseif sym === :num_parameters
+        return length(getfield(ansatz, :parameter_names))
+    end
+    return getfield(ansatz, sym)
+end
+
+assign_parameters(ansatz::NativeAnsatz, theta::AbstractVector{<:Real}) =
+    bind_ansatz_parameters(ansatz, theta)
+assign_parameters(qc::Qiskit.QuantumCircuit, theta::AbstractVector{<:Real}) =
+    bind_ansatz_parameters(qc, theta)
 
 function (ansatz::NativeAnsatz)(theta::AbstractVector{<:Real})::Qiskit.QuantumCircuit
     return bind_ansatz_parameters(ansatz, theta)
@@ -282,19 +298,6 @@ function efficient_su2_ansatz(
     )
 end
 
-function _extract_instruction_unitary(
-    qc::Qiskit.QuantumCircuit,
-    inst_index0::Integer,
-    num_qubits::Integer,
-)::Matrix{ComplexF64}
-    dim = 1 << Int(num_qubits)
-    # Query unitary if LibQiskit exposes it; otherwise fallback
-    inst_ref = Ref(_LibQiskit.QkCircuitInstruction(C_NULL, C_NULL, C_NULL, C_NULL, 0, 0, 0))
-    _LibQiskit.qk_circuit_get_instruction(qc.ptr, Csize_t(inst_index0), inst_ref)
-    _LibQiskit.qk_circuit_instruction_clear(inst_ref)
-    return Matrix{ComplexF64}(LinearAlgebra.I, dim, dim)
-end
-
 """
     append_circuit!(dest::Qiskit.QuantumCircuit, src::Qiskit.QuantumCircuit; qubits = nothing, include_measurements::Bool = true)
 
@@ -306,6 +309,21 @@ function append_circuit!(
     qubits::Union{Nothing,AbstractVector{<:Integer}} = nothing,
     include_measurements::Bool = true,
 )::Qiskit.QuantumCircuit
+    has_unitary = false
+    for idx in firstindex(src.data):lastindex(src.data)
+        if src.data[idx].name == "unitary"
+            has_unitary = true
+            break
+        end
+    end
+    if has_unitary
+        src = native_transpile(
+            src;
+            target = default_local_target(src.num_qubits),
+            optimization_level = 0,
+        ).circuit
+    end
+
     if qubits === nothing
         src.num_qubits <= dest.num_qubits ||
             throw(ArgumentError("Source circuit has $(src.num_qubits) qubits, exceeding destination ($(dest.num_qubits))."))
@@ -653,7 +671,7 @@ function _apply_gas_dictionary!(
     # Phase additions in Fourier basis for two's-complement register of width m
     for k in 1:m
         vq = val_qubits[k]
-        scale = sign_dir * 2.0 * π / (2.0^k)
+        scale = sign_dir * 2.0 * π / (2.0^(m - k + 1))
         if const_term != 0
             Qiskit.p!(qc, scale * const_term, vq)
         end
@@ -749,23 +767,48 @@ function build_gas_circuit(
     for _ in 1:num_grover_iterations
         # Phase oracle marks negative two's-complement states (sign bit == 1)
         Qiskit.z!(qc, sign_qubit)
-        # Inverse state preparation A_y†
+        # Inverse state preparation A_y† (includes H on key_qubits at the end)
         _apply_gas_dictionary!(qc, key_qubits, val_qubits, const_term, w_lin, w_quad; inverse = true)
-        # Grover diffusion on key register
+        # Grover zero-reflection on key register (H already applied by A_y† and re-applied by A_y)
         for q in key_qubits
-            Qiskit.h!(qc, q)
             Qiskit.x!(qc, q)
         end
         _apply_mcz!(qc, key_qubits)
         for q in key_qubits
             Qiskit.x!(qc, q)
-            Qiskit.h!(qc, q)
         end
-        # Re-apply state preparation A_y
+        # Re-apply state preparation A_y (includes H on key_qubits at the start)
         _apply_gas_dictionary!(qc, key_qubits, val_qubits, const_term, w_lin, w_quad; inverse = false)
     end
 
     return qc
+end
+
+function build_gas_circuit(
+    n::Integer,
+    L::AbstractVector{<:Real},
+    Q::AbstractMatrix{<:Real},
+    threshold::Real = 0.0;
+    num_value_qubits::Union{Nothing,Integer} = nothing,
+    num_grover_iterations::Integer = 1,
+    sense::MOI.OptimizationSense = MOI.MIN_SENSE,
+)::Qiskit.QuantumCircuit
+    num_keys = Int(n)
+    L_dict = Dict{Int,Float64}(i => Float64(L[i]) for i in 1:num_keys if !iszero(L[i]))
+    Q_dict = Dict{Tuple{Int,Int},Float64}()
+    for i in 1:num_keys, j in 1:num_keys
+        iszero(Q[i, j]) && continue
+        Q_dict[(i, j)] = get(Q_dict, (i, j), 0.0) + Float64(Q[i, j])
+    end
+    return build_gas_circuit(
+        num_keys,
+        L_dict,
+        Q_dict,
+        threshold;
+        num_value_qubits = num_value_qubits,
+        num_grover_iterations = num_grover_iterations,
+        sense = sense,
+    )
 end
 
 """
