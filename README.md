@@ -28,7 +28,7 @@ julia> Pkg.develop(url="https://github.com/JuliaQUBO/QiskitOpt.jl")
 ```
 
 ## Local Quickstart
-`QiskitOpt.jl` now defaults to credential-free local execution. If you do not pick a real IBM backend explicitly, both `QAOA.Optimizer` and `VQE.Optimizer` run locally with Aer using the matrix-product-state simulator.
+`QiskitOpt.jl` now defaults to credential-free local execution. If you do not pick a real IBM backend explicitly, `QAOA.Optimizer`, `VQE.Optimizer`, and `GAS.Optimizer` run locally with Aer using the matrix-product-state simulator.
 
 ```julia
 using JuMP
@@ -39,6 +39,9 @@ model = Model(QiskitOpt.QAOA.Optimizer)
 
 # Using VQE
 model = Model(QiskitOpt.VQE.Optimizer)
+
+# Using Grover Adaptive Search (GAS)
+model = Model(QiskitOpt.GAS.Optimizer)
 
 Q = [
    -1  2  2
@@ -116,7 +119,18 @@ set_attribute(model, VQE.Ansatz(), QiskitOpt.qiskit.circuit.library.EfficientSU2
 
 # Number of QAOA ansatz repetitions (for QAOA only)
 set_attribute(model, QAOA.NumberOfLayers(), 5)
+
+# Grover Adaptive Search (GAS) options (for GAS only)
+set_attribute(model, GAS.NumValueQubits(), 5)        # `nothing` (default) auto-sizes from posiform/negaform bounds
+set_attribute(model, GAS.NumIterations(), 3)         # iterations without improvement before stopping
+set_attribute(model, GAS.CoefficientPrecision(), 2)  # decimal precision when integerizing non-integer coefficients
 ```
+
+## Grover Adaptive Search (`GAS.Optimizer`)
+`QiskitOpt.GAS.Optimizer` wraps `qiskit_optimization.algorithms.GroverOptimizer` for small binary QUBO instances:
+- **Auto value-register sizing**: When `GAS.NumValueQubits()` is `nothing` (default), `GAS.estimate_num_value_qubits(L, Q)` computes the minimum two's-complement bit width `max(2, ceil(Int, log2(max(pos_sum, -neg_sum) + 1)) + 1)` from the posiform upper bound `pos_sum` and negaform lower bound `neg_sum`.
+- **Coefficient integerization**: Because `GroverOptimizer`'s value register uses integer arithmetic, `GAS.integerize_coefficients(L, Q; precision=1)` scales and rounds non-integer QUBO coefficients by `10^precision` for the oracle while evaluating returned states against the **original unrounded QUBO** (`QUBOTools.value(state, L, Q, α, β)`) so reported objective values remain exact in the model's units.
+- **Backend & seed attributes**: `GAS.Optimizer` accepts the same local Aer, fake-backend, and IBM Runtime attributes (`IBMBackend`, `IBMFakeBackend`, `IsLocal`, `Aer*`, `TranspilerSeed`, `Channel`, `Instance`, `RandomSeed`, `NumberOfReads`, and `FinalNumberOfReads`) as `QAOA.Optimizer` and `VQE.Optimizer`.
 
 ## Initial Parameters
 Both optimizers expose helpers for reproducible initial parameters and validate
