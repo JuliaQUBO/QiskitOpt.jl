@@ -1283,10 +1283,11 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     return build_quadratic_program(sampler).to_ising()
 end
 
-export VQE, QAOA, GAS, check_runtime, postprocess_samples, SamplePostprocessingError
+export VQE, QAOA, GAS, PCE, check_runtime, postprocess_samples, SamplePostprocessingError
 
 include("QAOA.jl")
 include("VQE.jl")
 include("GAS.jl")
+include("PCE.jl")
 
 end # module QiskitOpt
