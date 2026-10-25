@@ -1,6 +1,6 @@
 using Test
 using QiskitOpt
-using QiskitOpt: GAS, QAOA, QUBODrivers, QUBOTools, VQE
+using QiskitOpt: GAS, PCE, QAOA, QUBODrivers, QUBOTools, VQE
 
 include(joinpath(@__DIR__, "..", "examples", "ds_mfg_qubo", "DSMFGQUBOExample.jl"))
 
@@ -1830,10 +1830,150 @@ end
     end
 end
 
+@testset "Experimental Pauli Correlation Encoding (PCE) optimizer" begin
+    # 1. Qubit compression and observable-to-variable mapping
+    @test PCE.max_encoded_variables(2; parity_weight=2) == 3
+    @test PCE.max_encoded_variables(3; parity_weight=2) == 9
+    @test PCE.max_encoded_variables(4; parity_weight=2) == 18
+    @test PCE.minimum_pce_qubits(0) == 0
+    @test PCE.minimum_pce_qubits(1) == 2
+    @test PCE.minimum_pce_qubits(3) == 2
+    @test PCE.minimum_pce_qubits(4) == 3
+    @test PCE.minimum_pce_qubits(9) == 3
+    @test PCE.minimum_pce_qubits(10) == 4
+    @test_throws ArgumentError PCE.max_encoded_variables(1; parity_weight=2)
+    @test_throws ArgumentError PCE.minimum_pce_qubits(-1)
+
+    obs3 = PCE.pauli_correlation_observables(3)
+    @test obs3.num_variables == 3
+    @test obs3.num_qubits == 2
+    @test obs3.parity_weight == 2
+    @test obs3.max_capacity == 3
+    @test obs3.pauli_strings == ["XX", "YY", "ZZ"]
+    @test obs3.variable_map == Dict(1 => "XX", 2 => "YY", 3 => "ZZ")
+    @test obs3.families["X"] == ["XX"]
+    @test obs3.families["Y"] == ["YY"]
+    @test obs3.families["Z"] == ["ZZ"]
+
+    obs6 = PCE.pauli_correlation_observables(6)
+    @test obs6.num_qubits == 3
+    @test length(obs6.pauli_strings) == 6
+    @test length(unique(obs6.pauli_strings)) == 6
+    @test all(length(s) == 3 && count(!=('I'), s) == 2 for s in obs6.pauli_strings)
+    @test_throws ArgumentError PCE.pauli_correlation_observables(4; num_qubits=2, parity_weight=2)
+
+    # 2. Smooth tanh surrogate vs true QUBO energy and expectation decoding
+    evs = [-1.0, 0.0, 1.0]
+    x_tilde = PCE.surrogate_variables(evs; sharpness=2.0)
+    @test length(x_tilde) == 3
+    @test 0.0 < x_tilde[1] < 0.5
+    @test x_tilde[2] ≈ 0.5
+    @test 0.5 < x_tilde[3] < 1.0
+    @test PCE.decode_expectations([-0.2, 0.0, 0.4, -1.0e-6]) == [0, 1, 1, 0]
+
+    L_test = [-1.0, 2.0, -0.5]
+    Q_test = [
+        0.0  1.5 -2.0
+        0.0  0.0  1.0
+        0.0  0.0  0.0
+    ]
+    loss_no_reg = PCE.surrogate_loss(evs, L_test, Q_test; sharpness=2.0, regularization=0.0)
+    loss_with_reg = PCE.surrogate_loss(evs, L_test, Q_test; sharpness=2.0, regularization=0.5)
+    @test loss_with_reg > loss_no_reg
+    decoded_bits = PCE.decode_expectations(evs)
+    true_qubo_val = QUBOTools.value(decoded_bits, L_test, Q_test, 2.0, 1.25)
+    @test !(loss_no_reg ≈ true_qubo_val)
+    @test_throws ArgumentError PCE.surrogate_loss([0.1, 0.2], L_test, Q_test)
+    @test_throws ArgumentError PCE.surrogate_variables(evs; sharpness=0.0)
+
+    # 3. Classical 1-bit-flip polish helper
+    polish_min = PCE.bitflip_polish([1, 1, 1], L_test, Q_test, 2.0, 1.25; sense=MOI.MIN_SENSE)
+    @test polish_min.raw_value ≈ QUBOTools.value([1, 1, 1], L_test, Q_test, 2.0, 1.25)
+    @test polish_min.value <= polish_min.raw_value
+    @test polish_min.value ≈ QUBOTools.value(polish_min.state, L_test, Q_test, 2.0, 1.25)
+    @test polish_min.flips >= 1
+
+    polish_max = PCE.bitflip_polish([0, 0, 0], L_test, Q_test, 2.0, 1.25; sense=MOI.MAX_SENSE)
+    @test polish_max.value >= polish_max.raw_value
+    @test polish_max.value ≈ QUBOTools.value(polish_max.state, L_test, Q_test, 2.0, 1.25)
+
+    # 4. Pre-backend validation on PCE.Optimizer
+    prev_builder = QiskitOpt._runtime_service_builder[]
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
+    try
+        for (attr, bad_val) in (
+            (PCE.MaximumIterations(), 0),
+            (PCE.NumberOfReads(), 0),
+            (PCE.NumberOfLayers(), 0),
+            (PCE.ParityWeight(), 0),
+            (PCE.NumEncodingQubits(), 1),
+            (PCE.Sharpness(), -1.0),
+            (PCE.PolishMaxPasses(), -1),
+            (PCE.InitialParameters(), [0.0]),
+        )
+            bad_model, _ = build_model(PCE.Optimizer)
+            MOI.set(bad_model, PCE.IBMBackend(), "ibm_fez")
+            MOI.set(bad_model, attr, bad_val)
+            @test_throws ArgumentError MOI.optimize!(bad_model)
+        end
+    finally
+        QiskitOpt._runtime_service_builder[] = prev_builder
+    end
+
+    # 5. Credential-free local Aer solves (default Polish=false and opt-in Polish=true)
+    solve_locally_without_runtime_service(PCE.Optimizer, PCE; max_iterations=2, number_of_reads=32)
+    solve_locally_without_runtime_service(PCE.Optimizer, PCE; sense=:Max, max_iterations=2, number_of_reads=32)
+
+    default_pce_sampleset = sample_locally_without_runtime_service(
+        PCE.Optimizer,
+        PCE,
+        (m, mod) -> begin
+            MOI.set(m, QUBODrivers.RandomSeed(), 73001)
+            MOI.set(m, mod.NumberOfLayers(), 1)
+        end;
+        max_iterations=2,
+        number_of_reads=32,
+    )
+    default_pce_meta = QUBOTools.metadata(default_pce_sampleset)
+    @test QUBODrivers.validate_metadata(default_pce_meta) == String[]
+    @test default_pce_meta["algorithm"]["name"] == "PCE"
+    @test default_pce_meta["pce"]["experimental"] == true
+    @test default_pce_meta["pce"]["num_variables"] == 3
+    @test default_pce_meta["pce"]["num_encoding_qubits"] == 2
+    @test default_pce_meta["pce"]["observables"] == ["XX", "YY", "ZZ"]
+    @test default_pce_meta["pce"]["polish_enabled"] == false
+    @test default_pce_meta["pce"]["polish_flips"] == 0
+    @test default_pce_meta["pce"]["raw_quantum_state"] == QUBOTools.state(default_pce_sampleset[1])
+    @test default_pce_meta["pce"]["raw_quantum_value"] ≈ QUBOTools.value(default_pce_sampleset[1])
+
+    polished_pce_sampleset = sample_locally_without_runtime_service(
+        PCE.Optimizer,
+        PCE,
+        (m, mod) -> begin
+            MOI.set(m, QUBODrivers.RandomSeed(), 73001)
+            MOI.set(m, mod.NumberOfLayers(), 1)
+            MOI.set(m, mod.Polish(), true)
+        end;
+        max_iterations=1,
+        number_of_reads=32,
+    )
+    polished_pce_meta = QUBOTools.metadata(polished_pce_sampleset)
+    @test polished_pce_meta["pce"]["polish_enabled"] == true
+    @test polished_pce_meta["pce"]["polished_value"] <= polished_pce_meta["pce"]["raw_quantum_value"] + 1.0e-12
+    @test QUBOTools.value(polished_pce_sampleset[1]) ≈ polished_pce_meta["pce"]["polished_value"]
+
+    # Check docs/pce_evaluation.md exists and documents go/no-go decision
+    eval_doc = read(joinpath(@__DIR__, "..", "docs", "pce_evaluation.md"), String)
+    @test occursin("Go / No-Go Architectural Decision", eval_doc)
+    @test occursin("QiskitOpt.PCE", eval_doc)
+    @test occursin("QUBOTools.value", eval_doc)
+end
+
 @testset "QUBODrivers compatibility suite" begin
     run_qubodrivers_suite(QAOA)
     run_qubodrivers_suite(VQE)
     run_qubodrivers_suite(GAS)
+    run_qubodrivers_suite(PCE)
 end
 
 include("citation.jl")

@@ -82,6 +82,10 @@ local Aer.
 - [QAOA best practices](docs/qaoa_best_practices.md) explains how to start
   locally with Aer, choose reproducible QAOA initial parameters, record metadata,
   and move selected runs to IBM hardware.
+- [Pauli Correlation Encoding (PCE) evaluation](docs/pce_evaluation.md) documents
+  the qubit compression, observable count, `EstimatorV2` call cost, `tanh`
+  surrogate vs true QUBO energy separation, opt-in classical 1-flip polish
+  attribution, and experimental submodule boundary for `QiskitOpt.PCE`.
 
 ## Runtime Diagnostics
 Use `check_runtime` to verify the Julia/Python bridge and local Qiskit stack before running an optimizer:
@@ -131,6 +135,12 @@ set_attribute(model, GAS.CoefficientPrecision(), 2)  # decimal precision when in
 - **Auto value-register sizing**: When `GAS.NumValueQubits()` is `nothing` (default), `GAS.estimate_num_value_qubits(L, Q)` computes the minimum two's-complement bit width `max(2, ceil(Int, log2(max(pos_sum, -neg_sum) + 1)) + 1)` from the posiform upper bound `pos_sum` and negaform lower bound `neg_sum`.
 - **Coefficient integerization**: Because `GroverOptimizer`'s value register uses integer arithmetic, `GAS.integerize_coefficients(L, Q; precision=1)` scales and rounds non-integer QUBO coefficients by `10^precision` for the oracle while evaluating returned states against the **original unrounded QUBO** (`QUBOTools.value(state, L, Q, α, β)`) so reported objective values remain exact in the model's units.
 - **Backend & seed attributes**: `GAS.Optimizer` accepts the same local Aer, fake-backend, and IBM Runtime attributes (`IBMBackend`, `IBMFakeBackend`, `IsLocal`, `Aer*`, `TranspilerSeed`, `Channel`, `Instance`, `RandomSeed`, `NumberOfReads`, and `FinalNumberOfReads`) as `QAOA.Optimizer` and `VQE.Optimizer`.
+
+## Experimental Pauli Correlation Encoding (`PCE.Optimizer`)
+`QiskitOpt.PCE` implements QSplit's Pauli Correlation Encoding (`solver_pce.py`) as an experimental submodule (see [`docs/pce_evaluation.md`](docs/pce_evaluation.md)):
+- **Qubit compression**: Maps $N$ binary variables onto $m$ qubits ($N \le 3\binom{m}{k}$, so $m = O(\sqrt{N})$ for default `ParityWeight() == 2`) via weight-$k$ $X$, $Y$, and $Z$ Pauli strings (`PCE.pauli_correlation_observables`, `PCE.minimum_pce_qubits`).
+- **True QUBO scoring**: Trains an $m$-qubit `n_local` ansatz with `EstimatorV2` and SciPy COBYLA on the smooth `tanh` surrogate (`PCE.surrogate_loss`), decodes expectation signs via `PCE.decode_expectations`, and **always** scores the returned binary assignment against the original QUBO (`QUBOTools.value(state, L, Q, α, β)`), recording the surrogate loss separately in `metadata["pce"]["surrogate_loss"]`.
+- **Opt-in classical polish**: Classical 1-bit-flip local search (`PCE.bitflip_polish`) is **disabled by default** (`PCE.Polish() == false`) so quantum expectation decoding is not conflated with classical hill-climbing. When `MOI.set(model, PCE.Polish(), true)` is set, `metadata["pce"]` records both `raw_quantum_state` / `raw_quantum_value` and `polished_value` / `polish_flips` / `polish_passes`.
 
 ## Initial Parameters
 Both optimizers expose helpers for reproducible initial parameters and validate
