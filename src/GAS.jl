@@ -1,21 +1,19 @@
 module GAS
 
-using PythonCall: pybuiltins, pyconvert, pyhasattr, pyis, pylen
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
     backend_version,
+    build_gas_circuit,
     build_quadratic_program,
     configured_execution_backend,
     default_local_backend,
     effective_seed,
     empty_metadata,
+    gas_grover_search,
     preset_pass_manager,
     python_float_property,
     python_float_vector,
-    qiskit_ibm_runtime,
-    qiskit_optimization_algorithms,
-    qiskit_optimization_utils,
     runtime_channel,
     runtime_instance
 
@@ -50,6 +48,7 @@ QUBODrivers.@setup Optimizer begin
 end
 
 const MaximumIterations = NumIterations
+const NumQubits = NumValueQubits
 
 QUBODrivers.honors_final_reads(::Type{<:Optimizer}) = true
 
@@ -353,32 +352,22 @@ function retrieve(
         return metadata
     end
 
-    qp = build_quadratic_program(n, integerized.L, integerized.Q; sense = MOI.MIN_SENSE)
-    pass_manager = preset_pass_manager(
-        backend;
-        optimization_level = 3,
-        seed_transpiler = aer_config.seed_transpiler,
+    gas_res = gas_grover_search(
+        n,
+        integerized.L,
+        integerized.Q;
+        num_value_qubits = resolved_num_value_qubits,
+        max_iter = max_iter,
+        shots = final_num_reads,
+        seed_simulator = aer_config.seed_simulator,
+        seed_optimizer = seed_optimizer,
     )
-    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode = backend)
-    qiskit_sampler.options.default_shots = final_num_reads
 
-    if !isnothing(seed_optimizer)
-        qiskit_optimization_utils().algorithm_globals.random_seed = seed_optimizer
-    end
-
-    grover_optimizer = qiskit_optimization_algorithms().GroverOptimizer(
-        resolved_num_value_qubits;
-        num_iterations = max_iter,
-        sampler = qiskit_sampler,
-        pass_manager = pass_manager,
-    )
-    result = grover_optimizer.solve(qp)
-
-    state_counts = _extract_state_counts(result, n, final_num_reads)
+    state_counts = gas_res.state_counts
     callback(state_counts)
 
-    evaluations = _operation_evaluations(result)
-    threshold_value = _threshold_value(result)
+    evaluations = gas_res.evaluations
+    threshold_value = gas_res.threshold
 
     metadata = empty_metadata(
         "GAS",

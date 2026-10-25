@@ -135,7 +135,17 @@ function qubo_to_ising(
     n::Integer,
     L::AbstractDict,
     Q::AbstractDict,
-    sense::MOI.OptimizationSense = MOI.MIN_SENSE;
+    sense_pos::MOI.OptimizationSense;
+    atol::Real = 1e-15,
+)::IsingHamiltonian
+    return qubo_to_ising(n, L, Q; sense = sense_pos, atol = atol)
+end
+
+function qubo_to_ising(
+    n::Integer,
+    L::AbstractDict,
+    Q::AbstractDict;
+    sense::MOI.OptimizationSense = MOI.MIN_SENSE,
     atol::Real = 1e-15,
 )::IsingHamiltonian
     num_qubits = Int(n)
@@ -182,7 +192,17 @@ function qubo_to_ising(
     n::Integer,
     L::AbstractVector{<:Real},
     Q::AbstractMatrix{<:Real},
-    sense::MOI.OptimizationSense = MOI.MIN_SENSE;
+    sense_pos::MOI.OptimizationSense;
+    atol::Real = 1e-15,
+)::IsingHamiltonian
+    return qubo_to_ising(n, L, Q; sense = sense_pos, atol = atol)
+end
+
+function qubo_to_ising(
+    n::Integer,
+    L::AbstractVector{<:Real},
+    Q::AbstractMatrix{<:Real};
+    sense::MOI.OptimizationSense = MOI.MIN_SENSE,
     atol::Real = 1e-15,
 )::IsingHamiltonian
     num_qubits = Int(n)
@@ -198,7 +218,7 @@ function qubo_to_ising(
             Q_dict[(i, j)] = Float64(Q[i, j])
         end
     end
-    return qubo_to_ising(num_qubits, L_dict, Q_dict, sense; atol = atol)
+    return qubo_to_ising(num_qubits, L_dict, Q_dict; sense = sense, atol = atol)
 end
 
 function qubo_to_ising(

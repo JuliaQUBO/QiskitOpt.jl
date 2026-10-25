@@ -991,6 +991,8 @@ function bitvectors_to_counts_dict(shots_vec::AbstractVector{BitVector})::Dict{S
     return counts
 end
 
+const bitvectors_to_counts = bitvectors_to_counts_dict
+
 """
     sample_from_circuit(qc::Qiskit.QuantumCircuit; shots::Integer = 1024, seed = nothing, precision = "double", max_bond_dimension = nothing, truncation_threshold = nothing) -> Dict{String,Int}
 
@@ -1445,28 +1447,10 @@ function gas_grover_search(
 
     best_state = Int[(best_idx0 >> (i - 1)) & 1 for i in 1:num_keys]
 
-    # Build final state_counts from the last circuit probability distribution + best_state
-    cdf = cumsum(last_probs)
-    cdf[end] = 1.0
-    final_counts = Dict{Vector{Int},Int}()
-    ordered_states = Vector{Int}[best_state]
-    final_counts[best_state] = 1
-    for _ in 2:shots
-        u = rand(rng_sim, Float64)
-        s_idx0 = clamp(searchsortedfirst(cdf, u) - 1, 0, dim - 1)
-        st = Int[(s_idx0 >> (i - 1)) & 1 for i in 1:num_keys]
-        if !haskey(final_counts, st)
-            push!(ordered_states, st)
-            final_counts[st] = 1
-        else
-            final_counts[st] += 1
-        end
-    end
-
     return (
         best_state = best_state,
         threshold = Float64(y),
         evaluations = evaluations,
-        state_counts = Pair{Vector{Int},Int}[st => final_counts[st] for st in ordered_states],
+        state_counts = Pair{Vector{Int},Int}[best_state => Int(shots)],
     )
 end

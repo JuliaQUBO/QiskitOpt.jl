@@ -1,17 +1,25 @@
 module QAOA
 
 using Qiskit
+using QiskitIBMRuntime
 using PythonCall: Py, PyException, pybuiltins, pyconvert, pyhasattr, pyis, pylist, pydict, pyint, pylen, pystr, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     IsingHamiltonian,
     NativeAnsatz,
+    NativeLocalBackend,
+    NativeOptimizerResult,
     NativePassManager,
+    NativeRuntimeBackend,
+    NativeRuntimeJob,
     PauliTerm,
     _TWO_QUBIT_GATE_NAMES,
+    _module_version,
     apply_layout_to_hamiltonian,
     backend_name,
     backend_version,
+    bind_ansatz_parameters,
+    bitvectors_to_counts,
     build_qaoa_circuit,
     circuit_depth,
     circuit_size,
@@ -20,6 +28,7 @@ using ..QiskitOpt:
     default_local_target,
     effective_seed,
     empty_metadata,
+    estimate_expectation,
     has_measurement_operations,
     iqm_backend,
     iqm_qiskit,
@@ -28,6 +37,7 @@ using ..QiskitOpt:
     iqm_tokens_file,
     measure_all,
     measure_all!,
+    minimize_objective,
     native_transpile,
     operation_counts_dict,
     parse_sparse_observable,
@@ -46,6 +56,8 @@ using ..QiskitOpt:
     runtime_instance,
     runtime_token,
     sample_bits,
+    sample_bitvectors_from_circuit,
+    sample_from_circuit,
     scipy,
     numpy,
     optimizer_result_metadata,
@@ -771,8 +783,8 @@ end
 function _runtime_handoff_package_versions()
     return Dict{String,Any}(
         "QiskitOpt" => _julia_package_version(),
-        "qiskit" => _python_package_version(qiskit),
-        "qiskit_ibm_runtime" => _python_package_version(qiskit_ibm_runtime),
+        "qiskit" => something(_module_version(Qiskit), "0.6.0"),
+        "qiskit_ibm_runtime" => something(_module_version(QiskitIBMRuntime), "0.3.0"),
     )
 end
 
@@ -817,6 +829,16 @@ function _runtime_handoff_metadata(;
 end
 
 function _transpile_for_runtime(circuit, backend; optimization_level::Integer, transpiler_seed)
+    if circuit isa Qiskit.QuantumCircuit
+        pm = preset_pass_manager(
+            backend;
+            optimization_level=optimization_level,
+            seed_transpiler=transpiler_seed,
+        )
+        res = pm.run(circuit)
+        return res isa Qiskit.TranspileResult ? res.circuit : res
+    end
+
     if isnothing(transpiler_seed)
         return qiskit().transpile(
             circuit;
@@ -840,6 +862,8 @@ function _python_call_string(object, name::Symbol)
             value = value()
         catch
         end
+        value isa AbstractString && return String(value)
+        value === nothing && return nothing
         return pyconvert(String, pystr(value))
     catch
         return nothing
@@ -867,7 +891,7 @@ end
 function _resource_audit_package_versions()
     return Dict{String,Any}(
         "QiskitOpt" => _julia_package_version(),
-        "qiskit" => _python_package_version(qiskit),
+        "qiskit" => something(_module_version(Qiskit), "0.6.0"),
     )
 end
 
@@ -1238,8 +1262,19 @@ function ibm_runtime_handoff(
             optimization_level=checked_optimization_level,
             transpiler_seed=checked_seed,
         )
-        sampler = qiskit_ibm_runtime().SamplerV2(mode=runtime_backend)
-        job = sampler.run(pylist([transpiled_circuit]), shots=pyint(shot_count))
+        exec_qc = transpiled_circuit isa Qiskit.TranspileResult ? transpiled_circuit.circuit : transpiled_circuit
+        job = if runtime_backend isa NativeRuntimeBackend
+            runtime_backend.submit_sampler(exec_qc, shot_count)
+        elseif runtime_backend isa QiskitIBMRuntime.Backend && service isa QiskitIBMRuntime.Service
+            NativeRuntimeJob(service, QiskitIBMRuntime.run_sampler_job(service, runtime_backend, exec_qc, shot_count))
+        elseif !(runtime_backend isa Py) && hasproperty(runtime_backend, :submit_sampler)
+            runtime_backend.submit_sampler(exec_qc, shot_count)
+        elseif !(runtime_backend isa Py) && hasproperty(runtime_backend, :run)
+            runtime_backend.run(exec_qc; shots=shot_count)
+        else
+            sampler = qiskit_ibm_runtime().SamplerV2(mode=runtime_backend)
+            sampler.run(pylist([exec_qc]), shots=pyint(shot_count))
+        end
     catch err
         handoff = metadata["runtime_handoff"]
         handoff["status"] = "failed_before_submission"
@@ -1596,9 +1631,6 @@ function _decode_counts_entries(
     num_variables::Integer;
     layout_permutation = nothing,
 )
-    entries = _normalize_counts_dict(counts)
-    isempty(entries) && throw(ArgumentError("counts must contain at least one positive measurement count"))
-
     perm = if isnothing(layout_permutation)
         nothing
     else
@@ -1611,6 +1643,35 @@ function _decode_counts_entries(
             )
         checked
     end
+
+    if counts isa AbstractVector{BitVector}
+        isempty(counts) && throw(ArgumentError("counts must contain at least one positive measurement count"))
+        ordered_states = Vector{Int}[]
+        aggregated_reads = Dict{Vector{Int},Int}()
+        for shot in counts
+            if length(shot) < num_variables || (!isnothing(perm) && any(idx -> idx > length(shot), perm))
+                throw(
+                    ArgumentError(
+                        "decoded shot bitvector length $(length(shot)) does not match QUBO variable count $(num_variables)",
+                    ),
+                )
+            end
+            # QiskitIBMRuntime.Samples / BitVector shots are ALREADY in LSB-first order:
+            # shot[j] is classical bit j-1 (1-based index j). Never reverse!
+            state = Int[shot[isnothing(perm) ? i : perm[i]] ? 1 : 0 for i in 1:num_variables]
+            if !haskey(aggregated_reads, state)
+                push!(ordered_states, state)
+                aggregated_reads[state] = 1
+            else
+                aggregated_reads[state] += 1
+            end
+        end
+        return Pair{Vector{Int},Int}[state => aggregated_reads[state] for state in ordered_states]
+    end
+
+    entries = _normalize_counts_dict(counts)
+    isempty(entries) && throw(ArgumentError("counts must contain at least one positive measurement count"))
+
     ordered_states = Vector{Int}[]
     aggregated_reads = Dict{Vector{Int},Int}()
 
@@ -1750,9 +1811,15 @@ end
 function _extract_counts_from_execution_output(output)
     output isa AbstractDict && return output
     output isa AbstractVector{<:Pair} && return output
+    output isa AbstractVector{BitVector} && return output
 
     # Handle (job, counts) or NamedTuple with :counts / :result / :job
     if output isa NamedTuple
+        if haskey(output, :samples) && !isnothing(output.samples)
+            val = output.samples
+            s = val isa Function ? val() : val
+            s isa AbstractVector{BitVector} && return s
+        end
         if haskey(output, :counts) && !isnothing(output.counts)
             val = output.counts
             return val isa Function ? val() : val
@@ -1814,15 +1881,16 @@ Returns a NamedTuple `(job=job, counts=counts)`.
 """
 function backend_run_executor(circuit, backend; shots::Integer = 1024)
     shot_count = _check_runtime_shots(shots)
+    exec_circuit = circuit isa Qiskit.TranspileResult ? circuit.circuit : circuit
     run_fn = getproperty(backend, :run)
     job = if backend isa Py
-        run_fn(circuit; shots=pyint(shot_count))
+        run_fn(exec_circuit; shots=pyint(shot_count))
     else
         try
-            run_fn(circuit; shots=shot_count)
+            run_fn(exec_circuit; shots=shot_count)
         catch err
             err isa MethodError || rethrow()
-            run_fn(circuit, shot_count)
+            run_fn(exec_circuit, shot_count)
         end
     end
     counts = _extract_counts_from_execution_output(job)
@@ -1831,12 +1899,13 @@ end
 
 function _run_circuit_with_hook(circuit, backend; shots::Integer, executor = nothing)
     shot_count = _check_runtime_shots(shots)
+    exec_circuit = circuit isa Qiskit.TranspileResult ? circuit.circuit : circuit
     if !isnothing(executor)
         raw_out = try
-            executor(circuit, backend; shots=shot_count)
+            executor(exec_circuit, backend; shots=shot_count)
         catch err
             err isa MethodError || rethrow()
-            executor(circuit, backend, shot_count)
+            executor(exec_circuit, backend, shot_count)
         end
         job = raw_out isa NamedTuple && haskey(raw_out, :job) ? raw_out.job : nothing
         counts = _extract_counts_from_execution_output(raw_out)
@@ -1849,12 +1918,12 @@ function _run_circuit_with_hook(circuit, backend; shots::Integer, executor = not
         hasproperty(backend, :run)
     end
     if has_run
-        out = backend_run_executor(circuit, backend; shots=shot_count)
+        out = backend_run_executor(exec_circuit, backend; shots=shot_count)
         return (job=out.job, counts=out.counts, execution_path="backend_run")
     end
 
     qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-    job = qiskit_sampler.run(pylist([circuit]), shots=pyint(shot_count))
+    job = qiskit_sampler.run(pylist([exec_circuit]), shots=pyint(shot_count))
     counts = job.result()[0].data.meas.get_counts()
     return (job=job, counts=counts, execution_path="ibm_runtime_sampler_v2")
 end
@@ -2017,7 +2086,7 @@ function _iqm_handoff_package_versions(; allow_import::Bool = false)
     end
     return Dict{String,Any}(
         "QiskitOpt" => _julia_package_version(),
-        "qiskit" => _python_package_version(qiskit),
+        "qiskit" => something(_module_version(Qiskit), "0.6.0"),
         "iqm.qiskit_iqm" => iqm_ver,
     )
 end
@@ -2493,12 +2562,10 @@ function retrieve(
         seed_transpiler=seed_transpiler,
     )
 
-    ising_qp = quadratic_program(sampler)
-    ising_hamiltonian = ising_qp[0]
-    ansatz = qiskit().circuit.library.QAOAAnsatz(
-        ising_hamiltonian,
-        reps=num_layers,
-    )
+    n, L, Q, _, _ = QUBOTools.qubo(sampler, :dense)
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+    ising_hamiltonian = qubo_to_ising(n, L, Q; sense = sense)
+    ansatz = qaoa_ansatz(ising_hamiltonian; reps=num_layers)
     parameter_names = qiskit_parameter_names(ansatz)
     expected_parameter_count = length(parameter_names)
 
@@ -2513,14 +2580,6 @@ function retrieve(
     else
         initial_parameter_source
     end
-
-    @pyexec """
-    def cost_function(params, ansatz, hamiltonian, estimator):
-        pub = (ansatz, [hamiltonian], [params])
-        result = estimator.run(pubs=[pub]).result()
-        energy = result[0].data.evs[0]
-        return energy
-    """ => cost_function
 
     backend_selection = configured_execution_backend(
         ibm_backend=ibm_backend,
@@ -2542,23 +2601,37 @@ function retrieve(
         seed_transpiler=aer_config.seed_transpiler,
     )
     pass_manager = pass_manager_selection.pass_manager
-    
+
     ansatz_isa = pass_manager.run(ansatz)
-    ising_hamiltonian = ising_hamiltonian.apply_layout(layout=ansatz_isa.layout)
+    isa_hamiltonian = if ansatz_isa isa NativeAnsatz && ansatz_isa.layout !== nothing
+        apply_layout_to_hamiltonian(ising_hamiltonian, ansatz_isa.layout)
+    elseif !(ansatz_isa isa NativeAnsatz) && !(ansatz_isa isa Qiskit.QuantumCircuit) && hasproperty(ansatz_isa, :layout)
+        layout_obj = getproperty(ansatz_isa, :layout)
+        layout_obj isa Qiskit.TranspileLayout ? apply_layout_to_hamiltonian(ising_hamiltonian, layout_obj) : ising_hamiltonian
+    else
+        ising_hamiltonian
+    end
 
+    eval_counter = Ref(0)
+    function cost_function(params::AbstractVector{<:Real})
+        eval_counter[] += 1
+        bound_qc = bind_ansatz_parameters(ansatz_isa, params)
+        eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
+        return estimate_expectation(
+            bound_qc,
+            isa_hamiltonian;
+            shots = num_reads,
+            seed = eval_seed,
+            precision = something(aer_config.precision, "double"),
+            max_bond_dimension = aer_config.mps_max_bond_dimension,
+            truncation_threshold = aer_config.mps_truncation_threshold,
+        )
+    end
 
-    initial_parameters = numpy().array(initial_parameter_values)
-
-    estimator = qiskit_ibm_runtime().EstimatorV2(mode=backend)
-    estimator.options.default_shots = num_reads
-    scipy_options = pydict()
-    scipy_options["maxiter"] = max_iter
-    result = scipy().optimize.minimize(
+    result = minimize_objective(
         cost_function,
-        initial_parameters,
-        args=(ansatz_isa, ising_hamiltonian, estimator),
-        method="cobyla",
-        options=scipy_options,
+        initial_parameter_values;
+        max_iter = max_iter,
     )
     optimizer_iterations = python_int_property(result, :nit)
     optimizer_evaluations = python_int_property(result, :nfev)
@@ -2569,11 +2642,12 @@ function retrieve(
         function_evaluations=optimizer_evaluations,
     )
 
-    qc = ansatz.assign_parameters(result.x)
-    qc.measure_all()
-    optimized_qc = pass_manager.run(qc)
+    qc = bind_ansatz_parameters(ansatz, result.x)
+    measure_all!(qc)
+    optimized_qc_res = pass_manager.run(qc)
+    optimized_qc = optimized_qc_res isa Qiskit.TranspileResult ? optimized_qc_res.circuit : optimized_qc_res
 
-    samples = if !isnothing(circuit_executor)
+    samples = if !isnothing(circuit_executor) || !(backend isa NativeLocalBackend)
         _run_circuit_with_hook(
             optimized_qc,
             backend;
@@ -2581,9 +2655,14 @@ function retrieve(
             executor=circuit_executor,
         ).counts
     else
-        qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-        sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(final_num_reads)).result()[0]
-        sampling_result.data.meas.get_counts()
+        sample_from_circuit(
+            optimized_qc;
+            shots = final_num_reads,
+            seed = aer_config.seed_simulator,
+            precision = something(aer_config.precision, "double"),
+            max_bond_dimension = aer_config.mps_max_bond_dimension,
+            truncation_threshold = aer_config.mps_truncation_threshold,
+        )
     end
 
     callback(result, samples)

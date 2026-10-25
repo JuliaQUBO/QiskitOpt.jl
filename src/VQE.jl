@@ -1,23 +1,26 @@
 module VQE
 
 using Qiskit
-using PythonCall: pyconvert, pylist, pydict, pyint, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     IsingHamiltonian,
     NativeAnsatz,
+    NativeLocalBackend,
+    apply_layout_to_hamiltonian,
     backend_name,
     backend_version,
+    bind_ansatz_parameters,
     configured_execution_backend,
     default_local_backend,
     effective_seed,
     efficient_su2_ansatz,
     empty_metadata,
+    estimate_expectation,
+    measure_all!,
+    minimize_objective,
     preset_pass_manager,
     python_int_property,
     qiskit_parameter_names,
-    qiskit,
-    qiskit_ibm_runtime,
     quadratic_program,
     qubo_to_ising,
     random_unit_values,
@@ -25,11 +28,11 @@ using ..QiskitOpt:
     runtime_channel,
     runtime_instance,
     sample_bits,
-    scipy,
-    numpy,
+    sample_from_circuit,
     optimizer_result_metadata,
     python_float_vector,
     validate_initial_parameters
+using ..QAOA: _decode_counts_entries, _run_circuit_with_hook
 
 using QUBO
 MOI = QUBODrivers.MOI
@@ -137,21 +140,20 @@ end
 
 function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Retrieve Model
-    _, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
+    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
     sense = MOI.get(sampler, MOI.ObjectiveSense())
 
     # Results vector
     samples = QUBOTools.Sample{T,Int}[]
 
     retrieve_results = @timed retrieve(sampler) do _, sample_results
-        for key in sample_results.keys()
-            state = sample_bits(key)
+        for (state, reads) in _decode_counts_entries(sample_results, n)
             objective_value = QUBOTools.value(state, L, Q, α, β)
             sample = QUBOTools.Sample{T,Int}(
                 state,
                 sense == MOI.MAX_SENSE ? -objective_value : objective_value,
-                pyconvert(Int, sample_results[key]),
-            )   
+                reads,
+            )
             push!(samples, sample)
         end
 
@@ -195,10 +197,11 @@ function retrieve(
         seed_transpiler=seed_transpiler,
     )
 
-    ising_qp = quadratic_program(sampler)
-    ising_hamiltonian = ising_qp[0]
-    num_qubits = pyconvert(Int, ising_hamiltonian.num_qubits)
-    ansatz = ansatz_instance(num_qubits=num_qubits)
+    n, L, Q, _, _ = QUBOTools.qubo(sampler, :dense)
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+    ising_hamiltonian = qubo_to_ising(n, L, Q; sense = sense)
+    num_qubits = ising_hamiltonian.num_qubits
+    ansatz = resolve_ansatz(ansatz_instance, num_qubits)
     parameter_names = qiskit_parameter_names(ansatz)
     expected_parameter_count = length(parameter_names)
 
@@ -213,14 +216,6 @@ function retrieve(
     else
         initial_parameter_source
     end
-
-    @pyexec """
-    def cost_function(params, ansatz, hamiltonian, estimator):
-        pub = (ansatz, [hamiltonian], [params])
-        result = estimator.run(pubs=[pub]).result()
-        energy = result[0].data.evs[0]
-        return energy
-    """ => cost_function
 
     backend_selection = configured_execution_backend(
         ibm_backend=ibm_backend,
@@ -240,23 +235,37 @@ function retrieve(
         optimization_level=3,
         seed_transpiler=aer_config.seed_transpiler,
     )
-    
+
     ansatz_isa = pass_manager.run(ansatz)
-    ising_hamiltonian = ising_hamiltonian.apply_layout(layout=ansatz_isa.layout)
+    isa_hamiltonian = if ansatz_isa isa NativeAnsatz && ansatz_isa.layout !== nothing
+        apply_layout_to_hamiltonian(ising_hamiltonian, ansatz_isa.layout)
+    elseif !(ansatz_isa isa NativeAnsatz) && !(ansatz_isa isa Qiskit.QuantumCircuit) && hasproperty(ansatz_isa, :layout)
+        layout_obj = getproperty(ansatz_isa, :layout)
+        layout_obj isa Qiskit.TranspileLayout ? apply_layout_to_hamiltonian(ising_hamiltonian, layout_obj) : ising_hamiltonian
+    else
+        ising_hamiltonian
+    end
 
+    eval_counter = Ref(0)
+    function cost_function(params::AbstractVector{<:Real})
+        eval_counter[] += 1
+        bound_qc = bind_ansatz_parameters(ansatz_isa, params)
+        eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
+        return estimate_expectation(
+            bound_qc,
+            isa_hamiltonian;
+            shots = num_reads,
+            seed = eval_seed,
+            precision = something(aer_config.precision, "double"),
+            max_bond_dimension = aer_config.mps_max_bond_dimension,
+            truncation_threshold = aer_config.mps_truncation_threshold,
+        )
+    end
 
-    initial_parameters = numpy().array(initial_parameter_values)
-
-    estimator = qiskit_ibm_runtime().EstimatorV2(mode=backend)
-    estimator.options.default_shots = num_reads
-    scipy_options = pydict()
-    scipy_options["maxiter"] = max_iter
-    result = scipy().optimize.minimize(
+    result = minimize_objective(
         cost_function,
-        initial_parameters,
-        args=(ansatz_isa, ising_hamiltonian, estimator),
-        method="cobyla",
-        options=scipy_options,
+        initial_parameter_values;
+        max_iter = max_iter,
     )
     optimizer_iterations = python_int_property(result, :nit)
     optimizer_evaluations = python_int_property(result, :nfev)
@@ -267,13 +276,27 @@ function retrieve(
         function_evaluations=optimizer_evaluations,
     )
 
-    qc = ansatz.assign_parameters(result.x)
-    qc.measure_all()
-    optimized_qc = pass_manager.run(qc)
+    qc = bind_ansatz_parameters(ansatz, result.x)
+    measure_all!(qc)
+    optimized_qc_res = pass_manager.run(qc)
+    optimized_qc = optimized_qc_res isa Qiskit.TranspileResult ? optimized_qc_res.circuit : optimized_qc_res
 
-    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-    sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(final_num_reads)).result()[0]
-    samples = sampling_result.data.meas.get_counts()
+    samples = if backend isa NativeLocalBackend
+        sample_from_circuit(
+            optimized_qc;
+            shots = final_num_reads,
+            seed = aer_config.seed_simulator,
+            precision = something(aer_config.precision, "double"),
+            max_bond_dimension = aer_config.mps_max_bond_dimension,
+            truncation_threshold = aer_config.mps_truncation_threshold,
+        )
+    else
+        _run_circuit_with_hook(
+            optimized_qc,
+            backend;
+            shots = final_num_reads,
+        ).counts
+    end
 
     callback(result, samples)
 

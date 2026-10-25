@@ -97,6 +97,24 @@ function minimize_objective(
         x_sweep_start = copy(x_best)
         improved_in_sweep = false
 
+        # On the first sweep when d >= 2, probe a simultaneous multi-coordinate
+        # rotation so two-qubit correlator objectives (e.g. PCE <XX>, <YY> starting
+        # at θ = 0) escape the single-qubit product-state stationary manifold.
+        if nit == 0 && d >= 2 && nfev < max_iter
+            nit += 1
+            x_diag = Vector{Float64}(undef, d)
+            @inbounds for i in 1:d
+                x_diag[i] = x_best[i] + (isodd(i) ? 1.5 : -1.5) * rho
+            end
+            f_diag = Float64(f(copy(x_diag)))
+            nfev += 1
+            if f_diag < f_best
+                x_best = x_diag
+                f_best = f_diag
+                improved_in_sweep = true
+            end
+        end
+
         for coord in 1:d
             nfev >= max_iter && break
             nit += 1
@@ -177,3 +195,4 @@ function minimize_objective(
         nfev,
     )
 end
+

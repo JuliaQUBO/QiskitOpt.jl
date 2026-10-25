@@ -1,31 +1,33 @@
 module PCE
 
 using Qiskit
-using PythonCall: pyconvert, pylist, pydict
 using ..QiskitOpt:
     AerBackendConfig,
     NativeAnsatz,
+    NativeLocalBackend,
     backend_name,
     backend_version,
+    bind_ansatz_parameters,
+    build_pce_basis_circuits,
     configured_execution_backend,
+    decode_pce_expectations_from_basis_counts,
     default_local_backend,
     effective_seed,
     efficient_su2_ansatz,
     empty_metadata,
-    numpy,
+    estimate_pauli_expectations,
+    minimize_objective,
     optimizer_result_metadata,
     preset_pass_manager,
     python_float_vector,
     python_int_property,
-    qiskit,
-    qiskit_ibm_runtime,
     qiskit_parameter_names,
     random_unit_values,
     resolve_ansatz,
     runtime_channel,
     runtime_instance,
-    scipy,
     validate_initial_parameters
+using ..QAOA: _run_circuit_with_hook, extract_layout_permutation
 
 using QUBO
 MOI = QUBODrivers.MOI
@@ -520,11 +522,7 @@ function retrieve(
         return metadata
     end
 
-    ansatz = try
-        ansatz_factory(num_qubits = m, reps = num_layers)
-    catch
-        ansatz_factory(num_qubits = m)
-    end
+    ansatz = resolve_ansatz(ansatz_factory, m; reps = num_layers)
     param_names = qiskit_parameter_names(ansatz)
     expected_param_count = length(param_names)
 
@@ -559,37 +557,58 @@ function retrieve(
         seed_transpiler = aer_config.seed_transpiler,
     )
     ansatz_isa = pass_manager.run(ansatz)
-    sparse_pauli_op = qiskit().quantum_info.SparsePauliOp
-    isa_observables = pylist([
-        sparse_pauli_op(pstr).apply_layout(layout = ansatz_isa.layout)
-        for pstr in obs.pauli_strings
-    ])
-
-    estimator = qiskit_ibm_runtime().EstimatorV2(mode = backend)
-    estimator.options.default_shots = num_reads
 
     sign = sense == MOI.MIN_SENSE ? one(T) : -one(T)
     L_signed = Float64.(sign .* L)
     Q_signed = Float64.(sign .* Q)
 
-    function evaluate_expectations(params_py)
-        pub = (ansatz_isa, isa_observables, params_py)
-        pub_result = estimator.run(pubs = pylist([pub])).result()[0]
-        return python_float_vector(pub_result.data.evs)
+    eval_counter = Ref(0)
+    function evaluate_expectations(params::AbstractVector{<:Real}, shots_to_use::Integer)
+        eval_counter[] += 1
+        base_qc = bind_ansatz_parameters(ansatz, params)
+        eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
+        if backend isa NativeLocalBackend
+            return estimate_pauli_expectations(
+                base_qc,
+                obs.pauli_strings;
+                shots = shots_to_use,
+                seed = eval_seed,
+                precision = something(aer_config.precision, "double"),
+            )
+        end
+
+        basis_circuits = build_pce_basis_circuits(base_qc, obs.pauli_strings)
+        basis_counts = Dict{Char,Any}()
+        perm = ansatz_isa isa NativeAnsatz ? ansatz_isa.layout_permutation : nothing
+        for basis in sort!(collect(keys(basis_circuits)))
+            trans_b = pass_manager.run(basis_circuits[basis])
+            perm_b = trans_b isa Qiskit.TranspileResult ? extract_layout_permutation(trans_b; num_variables = m) : perm
+            if perm === nothing
+                perm = perm_b
+            end
+            exec_b = trans_b isa Qiskit.TranspileResult ? trans_b.circuit : trans_b
+            basis_counts[basis] = _run_circuit_with_hook(
+                exec_b,
+                backend;
+                shots = shots_to_use,
+            ).counts
+        end
+        return decode_pce_expectations_from_basis_counts(
+            basis_counts,
+            obs.pauli_strings;
+            layout_permutation = perm,
+        )
     end
 
-    function pce_cost_function(params_py)
-        evs = evaluate_expectations(params_py)
+    function pce_cost_function(params::AbstractVector{<:Real})
+        evs = evaluate_expectations(params, num_reads)
         return surrogate_loss(evs, L_signed, Q_signed; sharpness = sharpness)
     end
 
-    scipy_options = pydict()
-    scipy_options["maxiter"] = max_iter
-    result = scipy().optimize.minimize(
+    result = minimize_objective(
         pce_cost_function,
-        numpy().array(initial_parameter_values);
-        method = "cobyla",
-        options = scipy_options,
+        initial_parameter_values;
+        max_iter = max_iter,
     )
 
     optimizer_iterations = python_int_property(result, :nit)
@@ -601,8 +620,7 @@ function retrieve(
         function_evaluations = optimizer_evaluations,
     )
 
-    estimator.options.default_shots = final_num_reads
-    final_expectations = evaluate_expectations(result.x)
+    final_expectations = evaluate_expectations(result.x, final_num_reads)
     final_surrogate_loss = surrogate_loss(final_expectations, L_signed, Q_signed; sharpness = sharpness)
     raw_quantum_state = decode_expectations(final_expectations)
     raw_quantum_value = Float64(QUBOTools.value(raw_quantum_state, L, Q, α, β))

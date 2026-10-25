@@ -1079,17 +1079,28 @@ struct NativePassManager
 end
 
 function run_pass_manager(pm::NativePassManager, qc::Qiskit.QuantumCircuit)::Qiskit.TranspileResult
+    eff_level = (pm.target === nothing && qc.num_qubits > 18) ? 0 : pm.optimization_level
     return native_transpile(
         qc;
         target = pm.target,
-        optimization_level = pm.optimization_level,
+        optimization_level = eff_level,
         seed = pm.seed_transpiler,
     )
 end
 
 function run_pass_manager(pm::NativePassManager, ansatz::NativeAnsatz)::NativeAnsatz
-    if ansatz.num_qubits == 0
-        return ansatz
+    if ansatz.num_qubits == 0 || pm.target === nothing
+        return NativeAnsatz(
+            ansatz.num_qubits,
+            ansatz.parameter_names,
+            ansatz.build;
+            name = ansatz.name,
+            reps = ansatz.reps,
+            su2_gates = ansatz.su2_gates,
+            entanglement = ansatz.entanglement,
+            layout = ansatz.layout,
+            layout_permutation = collect(1:ansatz.num_qubits),
+        )
     end
     template_qc = ansatz(zeros(Float64, num_parameters(ansatz)))
     res = run_pass_manager(pm, template_qc)
