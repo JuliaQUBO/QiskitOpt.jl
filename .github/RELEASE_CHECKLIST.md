@@ -29,8 +29,11 @@ projects.
 
 ## After publishing the GitHub release
 
-- [ ] Confirm the Zenodo GitHub integration published a **new version** under
-      the existing concept record automatically when TagBot created the GitHub
+- [ ] Confirm the `Zenodo release verification` GitHub Actions workflow
+      (`.github/workflows/zenodo.yml`) passed (or run
+      `julia --project=. scripts/verify_zenodo_release.jl <release-tag>`) and
+      that the Zenodo GitHub integration published a **new version** under the
+      existing concept record automatically when TagBot created the GitHub
       release. Do not deposit a new upload or concept DOI by hand; if the
       integration is ever disabled, re-enable it rather than archiving
       manually.
