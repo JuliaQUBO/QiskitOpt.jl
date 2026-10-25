@@ -1,13 +1,16 @@
 module PCE
 
+using Qiskit
 using PythonCall: pyconvert, pylist, pydict
 using ..QiskitOpt:
     AerBackendConfig,
+    NativeAnsatz,
     backend_name,
     backend_version,
     configured_execution_backend,
     default_local_backend,
     effective_seed,
+    efficient_su2_ansatz,
     empty_metadata,
     numpy,
     optimizer_result_metadata,
@@ -18,6 +21,7 @@ using ..QiskitOpt:
     qiskit_ibm_runtime,
     qiskit_parameter_names,
     random_unit_values,
+    resolve_ansatz,
     runtime_channel,
     runtime_instance,
     scipy,
@@ -28,13 +32,8 @@ MOI = QUBODrivers.MOI
 Sample = QUBODrivers.Sample
 SampleSet = QUBODrivers.SampleSet
 
-function default_ansatz(; num_qubits::Integer, reps::Integer = 2)
-    return qiskit().circuit.library.n_local(
-        Int(num_qubits),
-        pylist(["ry", "rz"]),
-        "cz";
-        reps = Int(reps),
-    )
+function default_ansatz(; num_qubits::Integer, reps::Integer = 2, kwargs...)
+    return efficient_su2_ansatz(Int(num_qubits); reps = Int(reps), kwargs...)
 end
 
 QUBODrivers.@setup Optimizer begin

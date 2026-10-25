@@ -1,13 +1,17 @@
 module VQE
 
+using Qiskit
 using PythonCall: pyconvert, pylist, pydict, pyint, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
+    IsingHamiltonian,
+    NativeAnsatz,
     backend_name,
     backend_version,
     configured_execution_backend,
     default_local_backend,
     effective_seed,
+    efficient_su2_ansatz,
     empty_metadata,
     preset_pass_manager,
     python_int_property,
@@ -15,7 +19,9 @@ using ..QiskitOpt:
     qiskit,
     qiskit_ibm_runtime,
     quadratic_program,
+    qubo_to_ising,
     random_unit_values,
+    resolve_ansatz,
     runtime_channel,
     runtime_instance,
     sample_bits,
@@ -30,8 +36,8 @@ MOI = QUBODrivers.MOI
 Sample = QUBODrivers.Sample
 SampleSet = QUBODrivers.SampleSet
 
-function default_ansatz(; kwargs...)
-    return qiskit().circuit.library.EfficientSU2(; kwargs...)
+function default_ansatz(; num_qubits::Integer, kwargs...)
+    return efficient_su2_ansatz(num_qubits; kwargs...)
 end
 
 QUBODrivers.@setup Optimizer begin
@@ -70,8 +76,12 @@ end
 
 function _ansatz_parameter_names(n_variables::Integer, ansatz)
     num_qubits = _check_n_variables(n_variables)
-    circuit = ansatz(num_qubits=num_qubits)
-    return qiskit_parameter_names(circuit)
+    resolved = try
+        resolve_ansatz(ansatz, num_qubits)
+    catch
+        ansatz(num_qubits=num_qubits)
+    end
+    return qiskit_parameter_names(resolved)
 end
 
 """
@@ -88,8 +98,7 @@ function parameter_names(n_variables::Integer; ansatz = default_ansatz)
 end
 
 function parameter_names(sampler::QUBODrivers.AbstractSampler; ansatz = MOI.get(sampler, VQE.Ansatz()))
-    ising_hamiltonian = quadratic_program(sampler)[0]
-    n_variables = pyconvert(Int, ising_hamiltonian.num_qubits)
+    n_variables = first(QUBOTools.qubo(sampler, :dict))
     return parameter_names(; n_variables=n_variables, ansatz=ansatz)
 end
 

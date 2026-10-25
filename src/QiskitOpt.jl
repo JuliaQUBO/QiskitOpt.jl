@@ -1,8 +1,15 @@
 module QiskitOpt
 
+using LinearAlgebra
 using PythonCall
 using QUBO
+using Qiskit
+using QiskitIBMRuntime
+using Random
 MOI = QUBODrivers.MOI
+
+include("ising.jl")
+include("circuits.jl")
 
 const DEFAULT_RUNTIME_CHANNEL = "ibm_quantum_platform"
 
@@ -686,6 +693,12 @@ function configured_execution_backend(;
 end
 
 function preset_pass_manager(backend; optimization_level::Integer = 3, seed_transpiler = nothing)
+    if backend === nothing || backend isa Qiskit.Target
+        return NativePassManager(backend, Int(optimization_level), seed_transpiler === nothing ? nothing : Int(seed_transpiler))
+    elseif !(backend isa PythonCall.Py) && hasproperty(backend, :target) && getproperty(backend, :target) isa Union{Nothing,Qiskit.Target}
+        return NativePassManager(getproperty(backend, :target), Int(optimization_level), seed_transpiler === nothing ? nothing : Int(seed_transpiler))
+    end
+
     if isnothing(seed_transpiler)
         return qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
             backend=backend,
@@ -762,6 +775,11 @@ function execution_status(execution_mode::AbstractString)
     end
 
     return "$(mode)_solved"
+end
+
+function sample_bits(key::AbstractString)
+    bitstring = replace(String(key), " " => "")
+    return reverse(Int[(digit == '1') for digit in bitstring])
 end
 
 function sample_bits(key)
@@ -896,6 +914,9 @@ function python_float_vector(object)
         return Float64[PythonCall.pyconvert(Float64, value) for value in object]
     end
 end
+
+qiskit_parameter_names(ansatz::NativeAnsatz) = copy(ansatz.parameter_names)
+qiskit_parameter_names(::Qiskit.QuantumCircuit) = String[]
 
 function qiskit_parameter_names(circuit)
     return String[
