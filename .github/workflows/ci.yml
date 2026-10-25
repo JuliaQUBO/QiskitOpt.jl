@@ -18,7 +18,7 @@ jobs:
           - version: '1'
             os: ubuntu-latest
           - version: '1'
-            os: windows-latest
+            os: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
@@ -27,3 +27,23 @@ jobs:
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+  pythoncall-ext:
+    name: Julia 1 - PythonCall Extension - ${{ github.event_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Test QiskitOptPythonCallExt loading and diagnostics
+        shell: julia --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.develop(PackageSpec(path=pwd()))
+          Pkg.add("PythonCall")
+          using QiskitOpt, PythonCall
+          ext = Base.get_extension(QiskitOpt, :QiskitOptPythonCallExt)
+          @assert ext !== nothing "QiskitOptPythonCallExt failed to load"
+          diag = check_runtime()
+          @assert diag.ok && diag.pythoncall.ok
