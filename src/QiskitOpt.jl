@@ -126,12 +126,14 @@ function Base.show(io::IO, lazy_module::LazyPythonModule)
 end
 
 # :: Python Qiskit Modules ::
-const qiskit              = LazyPythonModule("qiskit", "qiskit")
-const qiskit_optimization = LazyPythonModule("qiskit_optimization", "qiskit-optimization")
-const qiskit_ibm_runtime  = LazyPythonModule("qiskit_ibm_runtime", "qiskit-ibm-runtime")
-const qiskit_aer          = LazyPythonModule("qiskit_aer", "qiskit-aer")
-const scipy               = LazyPythonModule("scipy", "scipy")
-const numpy               = LazyPythonModule("numpy", "numpy")
+const qiskit                         = LazyPythonModule("qiskit", "qiskit")
+const qiskit_optimization            = LazyPythonModule("qiskit_optimization", "qiskit-optimization")
+const qiskit_optimization_algorithms = LazyPythonModule("qiskit_optimization.algorithms", "qiskit-optimization")
+const qiskit_optimization_utils      = LazyPythonModule("qiskit_optimization.utils", "qiskit-optimization")
+const qiskit_ibm_runtime             = LazyPythonModule("qiskit_ibm_runtime", "qiskit-ibm-runtime")
+const qiskit_aer                     = LazyPythonModule("qiskit_aer", "qiskit-aer")
+const scipy                          = LazyPythonModule("scipy", "scipy")
+const numpy                          = LazyPythonModule("numpy", "numpy")
 const _runtime_service_builder = Ref{Function}()
 const DEFAULT_AER_BACKEND_METHOD = "matrix_product_state"
 const _LOCAL_SOLVER_PRIMITIVES_NOTE =
@@ -184,7 +186,16 @@ end
 function __init__()
     foreach(
         _reset_python_module!,
-        (qiskit, qiskit_optimization, qiskit_ibm_runtime, qiskit_aer, scipy, numpy),
+        (
+            qiskit,
+            qiskit_optimization,
+            qiskit_optimization_algorithms,
+            qiskit_optimization_utils,
+            qiskit_ibm_runtime,
+            qiskit_aer,
+            scipy,
+            numpy,
+        ),
     )
     _runtime_service_builder[] = default_runtime_service
 end
@@ -1087,22 +1098,26 @@ function empty_metadata(
     return metadata
 end
 
-function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
-    # Retrieve Model
-    n, L, Q, α, β = QUBOTools.qubo(sampler, :dense)
+function build_quadratic_program(
+    n::Integer,
+    L::AbstractVector{<:Real},
+    Q::AbstractMatrix{<:Real};
+    sense::MOI.OptimizationSense = MOI.MIN_SENSE,
+)
+    n >= 0 || throw(ArgumentError("n must be non-negative"))
+    length(L) == n || throw(ArgumentError("L must have length $(n)"))
+    size(Q) == (n, n) || throw(ArgumentError("Q must have size ($(n), $(n))"))
 
-    # Build Qiskit Model
     linear    = PythonCall.pydict()
     quadratic = PythonCall.pydict()
     variable_names = string.(1:n)
-
-    sense = MOI.get(sampler, MOI.ObjectiveSense())
+    sign = sense == MOI.MIN_SENSE ? 1 : -1
 
     for i in 1:n
-        linear[variable_names[i]] = L[i] * (sense == MOI.MIN_SENSE ? 1 : -1)
+        linear[variable_names[i]] = L[i] * sign
     end
     for i in 1:n, j in 1:n
-        quadratic[variable_names[i], variable_names[j]] = Q[i,j] * (sense == MOI.MIN_SENSE ? 1 : -1)
+        quadratic[variable_names[i], variable_names[j]] = Q[i,j] * sign
     end
 
     qp = qiskit_optimization().QuadraticProgram()
@@ -1112,13 +1127,24 @@ function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
     end
 
     qp.minimize(linear = linear, quadratic = quadratic)
-    
-    return qp.to_ising()
+
+    return qp
 end
 
-export VQE, QAOA, check_runtime, postprocess_samples, SamplePostprocessingError
+function build_quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
+    n, L, Q, _, _ = QUBOTools.qubo(sampler, :dense)
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+    return build_quadratic_program(n, L, Q; sense = sense)
+end
+
+function quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}
+    return build_quadratic_program(sampler).to_ising()
+end
+
+export VQE, QAOA, GAS, check_runtime, postprocess_samples, SamplePostprocessingError
 
 include("QAOA.jl")
 include("VQE.jl")
+include("GAS.jl")
 
 end # module QiskitOpt

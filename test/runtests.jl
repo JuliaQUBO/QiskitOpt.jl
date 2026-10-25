@@ -1,6 +1,6 @@
 using Test
 using QiskitOpt
-using QiskitOpt: QAOA, QUBODrivers, QUBOTools, VQE
+using QiskitOpt: GAS, QAOA, QUBODrivers, QUBOTools, VQE
 
 include(joinpath(@__DIR__, "..", "examples", "ds_mfg_qubo", "DSMFGQUBOExample.jl"))
 
@@ -1368,9 +1368,161 @@ end
     )
 end
 
+@testset "Grover Adaptive Search (GAS) optimizer" begin
+    int_coeffs = GAS.integerize_coefficients([1.0, -2.0], [0.0 3.0; 0.0 0.0])
+    @test int_coeffs.L == [1, -2]
+    @test int_coeffs.Q == [0 3; 0 0]
+    @test !int_coeffs.scaled
+    @test int_coeffs.scale_factor == 1.0
+
+    scaled_default = GAS.integerize_coefficients([0.5, -1.2], [0.0 1.5; 0.0 0.0])
+    @test scaled_default.L == [5, -12]
+    @test scaled_default.Q == [0 15; 0 0]
+    @test scaled_default.scaled
+    @test scaled_default.scale_factor == 10.0
+
+    scaled_prec2 = GAS.integerize_coefficients([0.5, -1.25], [0.0 1.5; 0.0 0.0]; precision=2)
+    @test scaled_prec2.L == [50, -125]
+    @test scaled_prec2.Q == [0 150; 0 0]
+    @test scaled_prec2.scaled
+    @test scaled_prec2.scale_factor == 100.0
+
+    scaled_prec0 = GAS.integerize_coefficients([1.4, -1.6], [0.0 2.5; 0.0 0.0]; precision=0)
+    @test scaled_prec0.L == [1, -2]
+    @test scaled_prec0.Q == [0 2; 0 0]
+    @test scaled_prec0.scaled
+    @test scaled_prec0.scale_factor == 1.0
+
+    @test_throws ArgumentError GAS.integerize_coefficients([1.0], zeros(2, 2))
+    @test_throws ArgumentError GAS.integerize_coefficients([1.0, 2.0], zeros(2, 2); precision=-1)
+    @test_throws ArgumentError GAS.integerize_coefficients([NaN, 1.0], zeros(2, 2))
+
+    @test GAS.estimate_num_value_qubits([0, 0], [0 0; 0 0]) == 2
+    @test GAS.estimate_num_value_qubits([-1, 2], [0 -2; 0 0]) == 3
+    @test GAS.estimate_num_value_qubits([-1, -1, -1], [0 4 4; 0 0 4; 0 0 0]) == 5
+    @test GAS.estimate_num_value_qubits([0.5, -1.25], [0.0 1.5; 0.0 0.0]; precision=1) == 6
+    @test GAS.estimate_num_value_qubits([0.5, -1.25], [0.0 1.5; 0.0 0.0]; precision=2) == 9
+    @test_throws ArgumentError GAS.estimate_num_value_qubits([1.0], zeros(2, 2))
+
+    qp_direct = QiskitOpt.build_quadratic_program(2, [-1, 2], [0 -2; 0 0]; sense=MOI.MIN_SENSE)
+    @test QiskitOpt.PythonCall.pyconvert(Int, qp_direct.get_num_binary_vars()) == 2
+
+    previous_builder = QiskitOpt._runtime_service_builder[]
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
+    try
+        for (attr, bad_val) in (
+            (GAS.NumValueQubits(), 1),
+            (GAS.NumIterations(), 0),
+            (GAS.CoefficientPrecision(), -1),
+            (GAS.NumberOfReads(), 0),
+        )
+            bad_model, _ = build_model(GAS.Optimizer)
+            MOI.set(bad_model, GAS.IBMBackend(), "ibm_fez")
+            MOI.set(bad_model, attr, bad_val)
+            @test_throws ArgumentError MOI.optimize!(bad_model)
+        end
+    finally
+        QiskitOpt._runtime_service_builder[] = previous_builder
+    end
+
+    solve_locally_without_runtime_service(GAS.Optimizer, GAS; max_iterations=2, number_of_reads=32)
+    solve_locally_without_runtime_service(GAS.Optimizer, GAS; sense=:Max, max_iterations=2, number_of_reads=32)
+    solve_locally_without_runtime_service(
+        GAS.Optimizer,
+        GAS;
+        Q=FIXED_VARIABLE_Q,
+        fixed_variables=[4 => 1],
+        max_iterations=2,
+        number_of_reads=32,
+    )
+
+    fractional_Q = [
+        -0.5  1.25
+         0.0 -0.75
+    ]
+    fractional_L = [0.25, -0.5]
+    withenv(
+        "QISKIT_IBM_TOKEN" => nothing,
+        "QISKIT_IBM_INSTANCE" => nothing,
+        "QISKIT_IBM_CHANNEL" => nothing,
+        "IBMQ_API_TOKEN" => nothing,
+        "IBMQ_INSTANCE" => nothing,
+    ) do
+        prev_builder = QiskitOpt._runtime_service_builder[]
+        QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service should not be created")
+        try
+            for sense in (:Min, :Max)
+                model, x = build_model(
+                    GAS.Optimizer;
+                    Q=fractional_Q,
+                    L=fractional_L,
+                    scale=1.5,
+                    offset=0.75,
+                    sense=sense,
+                )
+                MOI.set(model, GAS.NumIterations(), 2)
+                MOI.set(model, GAS.CoefficientPrecision(), 2)
+                MOI.set(model, GAS.NumberOfReads(), 16)
+                MOI.set(model, QUBODrivers.FinalNumberOfReads(), 40)
+                MOI.set(model, QUBODrivers.RandomSeed(), 73001)
+                MOI.set(model, GAS.AerPrecision(), "single")
+                MOI.set(model, GAS.AerMaxParallelThreads(), 1)
+                MOI.set(model, GAS.AerSeedSimulator(), 1234)
+                MOI.set(model, GAS.TranspilerSeed(), 5678)
+
+                MOI.optimize!(model)
+                assert_solution_consistency(
+                    model,
+                    x;
+                    Q=fractional_Q,
+                    L=fractional_L,
+                    scale=1.5,
+                    offset=0.75,
+                )
+
+                sampleset = QUBOTools.solution(MOI.get(model, MOI.RawSolver()))
+                @test sum(QUBOTools.reads(sample) for sample in sampleset) == 40
+                metadata = QUBOTools.metadata(sampleset)
+                @test QUBODrivers.validate_metadata(metadata) == String[]
+                @test metadata["algorithm"]["name"] == "GAS"
+                @test metadata["execution"]["mode"] == "local"
+                @test metadata["backend_configuration"]["source"] == "aer_attributes"
+                @test metadata["backend_configuration"]["precision"] == "single"
+                @test metadata["seeds"]["sampler"] == 73001
+                @test metadata["seeds"]["simulator"] == 1234
+                @test metadata["seeds"]["transpiler"] == 5678
+                @test metadata["gas"]["num_value_qubits_source"] == "auto"
+                @test metadata["gas"]["num_key_qubits"] == 2
+                @test metadata["gas"]["num_iterations"] == 2
+                @test metadata["gas"]["coefficient_precision"] == 2
+                @test metadata["gas"]["coefficients_scaled"] == true
+                @test metadata["gas"]["coefficient_scale_factor"] == 100.0
+            end
+
+            explicit_sampleset = sample_locally_without_runtime_service(
+                GAS.Optimizer,
+                GAS,
+                (model, module_) -> begin
+                    MOI.set(model, module_.NumValueQubits(), 6)
+                    MOI.set(model, QUBODrivers.RandomSeed(), 73001)
+                end;
+                max_iterations=2,
+                number_of_reads=24,
+            )
+            explicit_metadata = QUBOTools.metadata(explicit_sampleset)
+            @test explicit_metadata["gas"]["num_value_qubits"] == 6
+            @test explicit_metadata["gas"]["num_value_qubits_source"] == "user"
+            @test explicit_metadata["gas"]["coefficients_scaled"] == false
+        finally
+            QiskitOpt._runtime_service_builder[] = prev_builder
+        end
+    end
+end
+
 @testset "QUBODrivers compatibility suite" begin
     run_qubodrivers_suite(QAOA)
     run_qubodrivers_suite(VQE)
+    run_qubodrivers_suite(GAS)
 end
 
 include("citation.jl")
