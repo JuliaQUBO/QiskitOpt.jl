@@ -1360,7 +1360,7 @@ function extract_layout_permutation(
     req_n <= 0 && return Int[]
     if length(raw_perm) >= req_n
         sub = raw_perm[1:req_n]
-        if length(unique(sub)) == req_n
+        if length(unique(sub)) == req_n && all(q -> 1 <= q <= req_n, sub)
             return sub
         end
     end
@@ -1395,8 +1395,11 @@ function extract_layout_permutation(
     end
 
     if isempty(phys_to_clbit)
-        if length(phys_perm) >= req_n && length(unique(phys_perm[1:req_n])) == req_n
-            return phys_perm[1:req_n]
+        if length(phys_perm) >= req_n
+            sub = phys_perm[1:req_n]
+            if length(unique(sub)) == req_n && all(q -> 1 <= q <= req_n, sub)
+                return sub
+            end
         end
         return collect(1:req_n)
     end
@@ -1404,9 +1407,9 @@ function extract_layout_permutation(
     perm = Vector{Int}(undef, req_n)
     for i in 1:req_n
         phys_q = i <= length(phys_perm) ? phys_perm[i] : i
-        perm[i] = get(phys_to_clbit, phys_q, phys_q)
+        perm[i] = get(phys_to_clbit, phys_q, i)
     end
-    if length(unique(perm)) != req_n
+    if length(unique(perm)) != req_n || any(c -> c < 1 || c > req_n, perm)
         return collect(1:req_n)
     end
     return perm
@@ -1438,7 +1441,7 @@ function extract_layout_permutation(
         return collect(1:req_n)
     end
     perm = Int[get(phys_to_clbit, i, i) for i in 1:req_n]
-    return length(unique(perm)) == req_n ? perm : collect(1:req_n)
+    return (length(unique(perm)) == req_n && all(c -> 1 <= c <= req_n, perm)) ? perm : collect(1:req_n)
 end
 
 function extract_layout_permutation(
@@ -1506,7 +1509,7 @@ function extract_layout_permutation(
         perm[i] = c_idx + 1
     end
 
-    if length(unique(perm)) != n
+    if length(unique(perm)) != n || any(c -> c < 1 || c > n, perm)
         return collect(1:n)
     end
     return perm
@@ -2522,8 +2525,9 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Results vector
     samples = QUBOTools.Sample{T,Int}[]
 
-    retrieve_results = @timed retrieve(sampler) do _, sample_results
-        for (state, reads) in _decode_counts_entries(sample_results, n)
+    retrieve_results = @timed retrieve(sampler) do _, sample_results, layout_perm...
+        perm = isempty(layout_perm) ? nothing : first(layout_perm)
+        for (state, reads) in _decode_counts_entries(sample_results, n; layout_permutation = perm)
             objective_value = QUBOTools.value(state, L, Q, α, β)
             sample = QUBOTools.Sample{T,Int}(
                 state,
@@ -2616,40 +2620,39 @@ function retrieve(
     pass_manager = pass_manager_selection.pass_manager
 
     ansatz_isa = pass_manager.run(ansatz)
-    isa_hamiltonian = if ansatz_isa isa NativeAnsatz && ansatz_isa.layout !== nothing
-        apply_layout_to_hamiltonian(ising_hamiltonian, ansatz_isa.layout)
-    elseif !(ansatz_isa isa NativeAnsatz) && !(ansatz_isa isa Qiskit.QuantumCircuit) && hasproperty(ansatz_isa, :layout)
-        layout_obj = getproperty(ansatz_isa, :layout)
-        layout_obj isa Qiskit.TranspileLayout ? apply_layout_to_hamiltonian(ising_hamiltonian, layout_obj) : ising_hamiltonian
-    else
-        ising_hamiltonian
-    end
 
     eval_counter = Ref(0)
     function cost_function(params::AbstractVector{<:Real})
         eval_counter[] += 1
-        bound_qc = bind_ansatz_parameters(ansatz_isa, params)
         eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
         if !(backend isa NativeLocalBackend || backend isa NativeFakeBackend) && ising_hamiltonian.num_qubits > 0
-            meas_qc = copy(bound_qc)
+            meas_qc = bind_ansatz_parameters(ansatz, params)
             measure_all!(meas_qc)
+            trans_res = pass_manager.run(meas_qc)
+            perm = extract_layout_permutation(trans_res; num_variables = ising_hamiltonian.num_qubits)
+            exec_qc = trans_res isa Qiskit.TranspileResult ? trans_res.circuit : trans_res
             raw_counts = _run_circuit_with_hook(
-                meas_qc,
+                exec_qc,
                 backend;
                 shots = num_reads,
                 executor = circuit_executor,
             ).counts
             val = 0.0
             total_r = 0
-            for (state, reads) in _decode_counts_entries(raw_counts, isa_hamiltonian.num_qubits)
-                val += reads * evaluate_ising_bitstring(isa_hamiltonian, state)
+            for (state, reads) in _decode_counts_entries(
+                raw_counts,
+                ising_hamiltonian.num_qubits;
+                layout_permutation = perm,
+            )
+                val += reads * evaluate_ising_bitstring(ising_hamiltonian, state; include_offset = false)
                 total_r += reads
             end
             return total_r > 0 ? val / total_r : 0.0
         end
+        bound_qc = bind_ansatz_parameters(ansatz, params)
         return estimate_expectation(
             bound_qc,
-            isa_hamiltonian;
+            ising_hamiltonian;
             shots = num_reads,
             seed = eval_seed,
             precision = something(aer_config.precision, "double"),
@@ -2676,6 +2679,7 @@ function retrieve(
     measure_all!(qc)
     optimized_qc_res = pass_manager.run(qc)
     optimized_qc = optimized_qc_res isa Qiskit.TranspileResult ? optimized_qc_res.circuit : optimized_qc_res
+    final_perm = n > 0 ? extract_layout_permutation(optimized_qc_res; num_variables = n) : nothing
 
     samples = if !isnothing(circuit_executor) || !(backend isa NativeLocalBackend)
         _run_circuit_with_hook(
@@ -2695,7 +2699,11 @@ function retrieve(
         )
     end
 
-    callback(result, samples)
+    if applicable(callback, result, samples, final_perm)
+        callback(result, samples, final_perm)
+    else
+        callback(result, samples)
+    end
 
     return empty_metadata(
         "QAOA",

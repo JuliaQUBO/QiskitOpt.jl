@@ -87,6 +87,7 @@ struct IsingHamiltonian
             end
         end
 
+        total_offset = Float64(offset)
         all_terms = PauliTerm[]
         if isempty(terms)
             for i in 1:n
@@ -106,13 +107,15 @@ struct IsingHamiltonian
                     1 <= q <= n ||
                         throw(ArgumentError("PauliTerm qubit $q exceeds num_qubits ($n)."))
                 end
-                if abs(term.coeff) > atol && !isempty(term.qubits)
+                if isempty(term.qubits)
+                    total_offset += term.coeff
+                elseif abs(term.coeff) > atol
                     push!(all_terms, term)
                 end
             end
         end
 
-        return new(n, Float64(offset), lin, quad, all_terms)
+        return new(n, total_offset, lin, quad, all_terms)
     end
 end
 
@@ -370,10 +373,8 @@ function parse_sparse_observable(
             if len == 0
                 total_offset += coeff
             else
-                bts = copy(unsafe_wrap(Array, raw.bit_terms, len))
-                idxs0 = copy(unsafe_wrap(Array, raw.indices, len))
-                qubits = Int[Int(i) + 1 for i in idxs0]
-                paulis = Symbol[_bitterm_to_symbol(bt) for bt in bts]
+                qubits = Int[Int(unsafe_load(raw.indices, k)) + 1 for k in 1:len]
+                paulis = Symbol[_bitterm_to_symbol(unsafe_load(raw.bit_terms, k)) for k in 1:len]
                 pt = PauliTerm(coeff, qubits, paulis)
                 if isempty(pt.qubits)
                     total_offset += pt.coeff

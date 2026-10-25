@@ -11,6 +11,7 @@ using ..QiskitOpt:
     backend_name,
     backend_version,
     bind_ansatz_parameters,
+    build_n_local_circuit,
     configured_execution_backend,
     default_local_backend,
     effective_seed,
@@ -20,6 +21,7 @@ using ..QiskitOpt:
     evaluate_ising_bitstring,
     measure_all!,
     minimize_objective,
+    n_local_ansatz,
     preset_pass_manager,
     python_int_property,
     qiskit_parameter_names,
@@ -34,7 +36,7 @@ using ..QiskitOpt:
     optimizer_result_metadata,
     python_float_vector,
     validate_initial_parameters
-using ..QAOA: _decode_counts_entries, _run_circuit_with_hook
+using ..QAOA: _decode_counts_entries, _run_circuit_with_hook, extract_layout_permutation
 
 using QUBO
 MOI = QUBODrivers.MOI
@@ -148,8 +150,9 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Results vector
     samples = QUBOTools.Sample{T,Int}[]
 
-    retrieve_results = @timed retrieve(sampler) do _, sample_results
-        for (state, reads) in _decode_counts_entries(sample_results, n)
+    retrieve_results = @timed retrieve(sampler) do _, sample_results, layout_perm...
+        perm = isempty(layout_perm) ? nothing : first(layout_perm)
+        for (state, reads) in _decode_counts_entries(sample_results, n; layout_permutation = perm)
             objective_value = QUBOTools.value(state, L, Q, α, β)
             sample = QUBOTools.Sample{T,Int}(
                 state,
@@ -239,39 +242,38 @@ function retrieve(
     )
 
     ansatz_isa = pass_manager.run(ansatz)
-    isa_hamiltonian = if ansatz_isa isa NativeAnsatz && ansatz_isa.layout !== nothing
-        apply_layout_to_hamiltonian(ising_hamiltonian, ansatz_isa.layout)
-    elseif !(ansatz_isa isa NativeAnsatz) && !(ansatz_isa isa Qiskit.QuantumCircuit) && hasproperty(ansatz_isa, :layout)
-        layout_obj = getproperty(ansatz_isa, :layout)
-        layout_obj isa Qiskit.TranspileLayout ? apply_layout_to_hamiltonian(ising_hamiltonian, layout_obj) : ising_hamiltonian
-    else
-        ising_hamiltonian
-    end
 
     eval_counter = Ref(0)
     function cost_function(params::AbstractVector{<:Real})
         eval_counter[] += 1
-        bound_qc = bind_ansatz_parameters(ansatz_isa, params)
         eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
         if !(backend isa NativeLocalBackend || backend isa NativeFakeBackend) && ising_hamiltonian.num_qubits > 0
-            meas_qc = copy(bound_qc)
+            meas_qc = bind_ansatz_parameters(ansatz, params)
             measure_all!(meas_qc)
+            trans_res = pass_manager.run(meas_qc)
+            perm = extract_layout_permutation(trans_res; num_variables = ising_hamiltonian.num_qubits)
+            exec_qc = trans_res isa Qiskit.TranspileResult ? trans_res.circuit : trans_res
             raw_counts = _run_circuit_with_hook(
-                meas_qc,
+                exec_qc,
                 backend;
                 shots = num_reads,
             ).counts
             val = 0.0
             total_r = 0
-            for (state, reads) in _decode_counts_entries(raw_counts, isa_hamiltonian.num_qubits)
-                val += reads * evaluate_ising_bitstring(isa_hamiltonian, state)
+            for (state, reads) in _decode_counts_entries(
+                raw_counts,
+                ising_hamiltonian.num_qubits;
+                layout_permutation = perm,
+            )
+                val += reads * evaluate_ising_bitstring(ising_hamiltonian, state; include_offset = false)
                 total_r += reads
             end
             return total_r > 0 ? val / total_r : 0.0
         end
+        bound_qc = bind_ansatz_parameters(ansatz, params)
         return estimate_expectation(
             bound_qc,
-            isa_hamiltonian;
+            ising_hamiltonian;
             shots = num_reads,
             seed = eval_seed,
             precision = something(aer_config.precision, "double"),
@@ -298,6 +300,7 @@ function retrieve(
     measure_all!(qc)
     optimized_qc_res = pass_manager.run(qc)
     optimized_qc = optimized_qc_res isa Qiskit.TranspileResult ? optimized_qc_res.circuit : optimized_qc_res
+    final_perm = n > 0 ? extract_layout_permutation(optimized_qc_res; num_variables = n) : nothing
 
     samples = if backend isa NativeLocalBackend
         sample_from_circuit(
@@ -316,7 +319,11 @@ function retrieve(
         ).counts
     end
 
-    callback(result, samples)
+    if applicable(callback, result, samples, final_perm)
+        callback(result, samples, final_perm)
+    else
+        callback(result, samples)
+    end
 
     return empty_metadata(
         "VQE",

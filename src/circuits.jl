@@ -298,6 +298,138 @@ function efficient_su2_ansatz(
     )
 end
 
+function _normalize_entanglement_blocks(blocks)::Vector{Symbol}
+    raw = blocks isa Union{Symbol,AbstractString} ? [blocks] : collect(blocks)
+    isempty(raw) && throw(ArgumentError("entanglement_blocks must not be empty."))
+    out = Symbol[]
+    for g in raw
+        sym = Symbol(lowercase(String(g)))
+        haskey(_GATE_LOOKUP, sym) || throw(ArgumentError("Unknown entanglement gate: $sym."))
+        _, nq, np = _GATE_LOOKUP[sym]
+        (nq == 2 && np == 0) ||
+            throw(ArgumentError("n_local entanglement gate must be an unparameterized 2-qubit gate; got $sym (nq=$nq, np=$np)."))
+        push!(out, sym)
+    end
+    return out
+end
+
+"""
+    n_local_ansatz(num_qubits; reps = 2, rotation_blocks = [:ry, :rz], entanglement_blocks = :cx, entanglement = :full) -> NativeAnsatz
+
+Construct a hardware-efficient `n_local` ansatz (used by `PCE.Optimizer` and configurable for `VQE.Optimizer`)
+with `(reps + 1)` single-qubit rotation layers (`rotation_blocks`) interleaved with `reps` two-qubit
+entanglement layers (`entanglement_blocks` over `entanglement` pairs).
+"""
+function n_local_ansatz(
+    num_qubits::Integer;
+    reps::Integer = 2,
+    rotation_blocks = [:ry, :rz],
+    entanglement_blocks = :cx,
+    entanglement = :full,
+)::NativeAnsatz
+    n = Int(num_qubits)
+    r = Int(reps)
+    n >= 0 || throw(ArgumentError("num_qubits must be non-negative; got $n."))
+    r >= 0 || throw(ArgumentError("reps must be non-negative; got $r."))
+    rot_gates = _normalize_su2_gates(rotation_blocks)
+    ent_gates = _normalize_entanglement_blocks(entanglement_blocks)
+    if n >= 2
+        _entanglement_pairs(n, entanglement; layer = 1)
+    end
+    num_params = n == 0 ? 0 : (r + 1) * length(rot_gates) * n
+    param_names = String["θ[$(i - 1)]" for i in 1:num_params]
+
+    function _build(theta::Vector{Float64})::Qiskit.QuantumCircuit
+        length(theta) == num_params ||
+            throw(ArgumentError("Expected $num_params parameters for n_local_ansatz; got $(length(theta))."))
+        qc = Qiskit.QuantumCircuit(n, 0)
+        n == 0 && return qc
+        idx = 1
+        for layer in 0:r
+            for g in rot_gates
+                gate_op, _, _ = _GATE_LOOKUP[g]
+                for q in 1:n
+                    Qiskit.qk_circuit_gate(qc, gate_op, Int32[q], Float64[theta[idx]])
+                    idx += 1
+                end
+            end
+            if layer < r && n >= 2
+                pairs = _entanglement_pairs(n, entanglement; layer = layer + 1)
+                for eg in ent_gates
+                    eg_op, _, _ = _GATE_LOOKUP[eg]
+                    for (q1, q2) in pairs
+                        Qiskit.qk_circuit_gate(qc, eg_op, Int32[q1, q2], Float64[])
+                    end
+                end
+            end
+        end
+        return qc
+    end
+
+    return NativeAnsatz(
+        n,
+        param_names,
+        _build;
+        name = "n_local",
+        reps = r,
+        su2_gates = rot_gates,
+        entanglement = entanglement,
+    )
+end
+
+"""
+    build_n_local_circuit(num_qubits::Integer, theta::AbstractVector{<:Real}; reps::Integer = 2, rotation_blocks = [:ry, :rz], entanglement_blocks = :cx, entanglement = :full) -> Qiskit.QuantumCircuit
+
+Build a concrete `Qiskit.QuantumCircuit` for an `n_local` ansatz bound to parameter vector `theta`.
+"""
+function build_n_local_circuit(
+    num_qubits::Integer,
+    theta::AbstractVector{<:Real};
+    reps::Integer = 2,
+    rotation_blocks = [:ry, :rz],
+    entanglement_blocks = :cx,
+    entanglement = :full,
+)::Qiskit.QuantumCircuit
+    ansatz = n_local_ansatz(
+        num_qubits;
+        reps = reps,
+        rotation_blocks = rotation_blocks,
+        entanglement_blocks = entanglement_blocks,
+        entanglement = entanglement,
+    )
+    return bind_ansatz_parameters(ansatz, theta)
+end
+
+function NativeAnsatz(
+    kind::Union{Symbol,AbstractString},
+    num_qubits::Integer;
+    reps::Integer = 3,
+    su2_gates = [:ry, :rz],
+    rotation_blocks = su2_gates,
+    entanglement_blocks = :cx,
+    entanglement = nothing,
+)::NativeAnsatz
+    k = Symbol(lowercase(String(kind)))
+    if k === :efficient_su2 || k === :efficientsu2
+        return efficient_su2_ansatz(
+            num_qubits;
+            reps = reps,
+            su2_gates = su2_gates,
+            entanglement = something(entanglement, :reverse_linear),
+        )
+    elseif k === :n_local || k === :nlocal
+        return n_local_ansatz(
+            num_qubits;
+            reps = reps,
+            rotation_blocks = rotation_blocks,
+            entanglement_blocks = entanglement_blocks,
+            entanglement = something(entanglement, :full),
+        )
+    else
+        throw(ArgumentError("Unsupported NativeAnsatz kind: $(repr(kind)) (expected `:efficient_su2` or `:n_local`)."))
+    end
+end
+
 """
     append_circuit!(dest::Qiskit.QuantumCircuit, src::Qiskit.QuantumCircuit; qubits = nothing, include_measurements::Bool = true)
 
@@ -654,22 +786,66 @@ function _apply_ccp!(qc::Qiskit.QuantumCircuit, theta::Float64, c1::Int, c2::Int
     return qc
 end
 
+function _apply_mcx!(
+    qc::Qiskit.QuantumCircuit,
+    controls::AbstractVector{<:Integer},
+    target::Integer,
+)
+    k = length(controls)
+    t = Int(target)
+    if k == 0
+        Qiskit.x!(qc, t)
+    elseif k == 1
+        Qiskit.cx!(qc, Int(controls[1]), t)
+    elseif k == 2
+        Qiskit.ccx!(qc, Int(controls[1]), Int(controls[2]), t)
+    else
+        Qiskit.h!(qc, t)
+        _apply_mcp!(qc, Float64(π), controls, t)
+        Qiskit.h!(qc, t)
+    end
+    return qc
+end
+
+function _apply_mcp!(
+    qc::Qiskit.QuantumCircuit,
+    theta::Real,
+    controls::AbstractVector{<:Integer},
+    target::Integer,
+)
+    ang = Float64(theta)
+    iszero(ang) && return qc
+    k = length(controls)
+    t = Int(target)
+    if k == 0
+        Qiskit.p!(qc, ang, t)
+    elseif k == 1
+        Qiskit.cp!(qc, ang, Int(controls[1]), t)
+    elseif k == 2
+        _apply_ccp!(qc, ang, Int(controls[1]), Int(controls[2]), t)
+    else
+        c_last = Int(controls[end])
+        c_rest = Int[Int(controls[i]) for i in 1:(k - 1)]
+        Qiskit.cp!(qc, ang / 2.0, c_last, t)
+        _apply_mcx!(qc, c_rest, c_last)
+        Qiskit.cp!(qc, -ang / 2.0, c_last, t)
+        _apply_mcx!(qc, c_rest, c_last)
+        _apply_mcp!(qc, ang / 2.0, c_rest, t)
+    end
+    return qc
+end
+
 function _apply_mcz!(qc::Qiskit.QuantumCircuit, qubits::AbstractVector{<:Integer})
     n = length(qubits)
     n == 0 && return qc
     if n == 1
-        Qiskit.z!(qc, qubits[1])
+        Qiskit.z!(qc, Int(qubits[1]))
     elseif n == 2
-        Qiskit.cz!(qc, qubits[1], qubits[2])
+        Qiskit.cz!(qc, Int(qubits[1]), Int(qubits[2]))
     elseif n == 3
-        Qiskit.ccz!(qc, qubits[1], qubits[2], qubits[3])
-    elseif n == 4
-        Qiskit.h!(qc, qubits[4])
-        Qiskit.rcccx!(qc, qubits[1], qubits[2], qubits[3], qubits[4])
-        Qiskit.h!(qc, qubits[4])
+        Qiskit.ccz!(qc, Int(qubits[1]), Int(qubits[2]), Int(qubits[3]))
     else
-        # Multi-controlled Z via recursive gray-code / V-chain decomposition
-        Qiskit.z!(qc, qubits[n])
+        _apply_mcp!(qc, Float64(π), Int[Int(qubits[i]) for i in 1:(n - 1)], Int(qubits[n]))
     end
     return qc
 end
@@ -1132,7 +1308,8 @@ function run_pass_manager(pm::NativePassManager, ansatz::NativeAnsatz)::NativeAn
             layout_permutation = collect(1:ansatz.num_qubits),
         )
     end
-    template_qc = ansatz(zeros(Float64, num_parameters(ansatz)))
+    probe_params = Float64[0.1234567 + 0.01 * i for i in 1:num_parameters(ansatz)]
+    template_qc = ansatz(probe_params)
     res = run_pass_manager(pm, template_qc)
     perm = transpile_layout_final_permutation(res.layout)
     n_phys = res.circuit.num_qubits

@@ -819,11 +819,51 @@ function _ccx_1q2q_seq(q1::Int, q2::Int, q3::Int)
     )
 end
 
+function _mps_reset_1q!(
+    mps::MatrixProductState{T},
+    q::Int,
+    rng::AbstractRNG,
+) where {T<:AbstractFloat}
+    _mps_right_canonicalize!(mps)
+    n = length(mps.tensors)
+    for k in 1:(q - 1)
+        A = mps.tensors[k]
+        dL, _, dR = size(A)
+        mat = reshape(A, 2 * dL, dR)
+        F = qr(mat)
+        Q_mat = Matrix(F.Q)
+        R_mat = Matrix(F.R)
+        new_bond = size(Q_mat, 2)
+        mps.tensors[k] = reshape(Q_mat, dL, 2, new_bond)
+        B = mps.tensors[k + 1]
+        _, _, dR2 = size(B)
+        B_mat = R_mat * reshape(B, dR, 2 * dR2)
+        mps.tensors[k + 1] = reshape(B_mat, new_bond, 2, dR2)
+    end
+    Aq = mps.tensors[q]
+    p0 = sum(abs2, @view Aq[:, 1, :])
+    p1 = sum(abs2, @view Aq[:, 2, :])
+    tot = max(p0 + p1, eps(T))
+    if rand(rng, T) * tot < p1
+        # Measured |1⟩ -> project onto |1⟩ and flip to |0⟩
+        scale = inv(sqrt(max(p1, eps(T))))
+        Aq[:, 1, :] .= Aq[:, 2, :] .* scale
+        Aq[:, 2, :] .= zero(Complex{T})
+    else
+        # Measured |0⟩ -> project onto |0⟩
+        scale = inv(sqrt(max(p0, eps(T))))
+        Aq[:, 1, :] .*= scale
+        Aq[:, 2, :] .= zero(Complex{T})
+    end
+    return mps
+end
+
 function simulate_mps(
     qc::Qiskit.QuantumCircuit;
     precision::Union{Nothing,AbstractString} = "double",
     max_bond_dimension::Union{Nothing,Integer} = nothing,
     truncation_threshold::Union{Nothing,Real} = nothing,
+    seed::Union{Nothing,Integer} = nothing,
 )
     T = _resolve_float_type(precision)
     exec_qc = _ensure_decomposed_unitaries(qc)
@@ -835,14 +875,17 @@ function simulate_mps(
         trunc_thresh = truncation_threshold,
     )
     n == 0 && return mps
+    rng = seed === nothing ? Random.default_rng() : Random.MersenneTwister(Int(seed))
     offset = exec_qc.offset
 
     for inst in exec_qc.data
         name = inst.name
-        (name == "barrier" || name == "delay" || name == "measure" || name == "reset") && continue
+        (name == "barrier" || name == "delay" || name == "measure") && continue
         qubits1 = Int[q - offset + 1 for q in inst.qubits]
         nq = length(qubits1)
-        if nq == 1
+        if name == "reset" && nq == 1
+            _mps_reset_1q!(mps, qubits1[1], rng)
+        elseif nq == 1
             u00, u01, u10, u11 = _gate_1q_matrix(name, inst.params, T)
             _mps_apply_1q!(mps, qubits1[1], u00, u01, u10, u11)
         elseif nq == 2
@@ -873,27 +916,50 @@ function simulate_mps(
                         ("u", [q3], [π / 2, 0.0, 3π / 4]),
                     ),
                 )
+            else
+                throw(ArgumentError("Unsupported 3-qubit circuit instruction '$name' in MPS simulator."))
             end
-        elseif nq == 4 && name == "rcccx"
+        elseif nq == 4 && (name == "rcccx" || name == "c3x")
             q1, q2, q3, q4 = qubits1[1], qubits1[2], qubits1[3], qubits1[4]
-            _mps_apply_gate_seq!(
-                mps,
-                (
-                    ("u", [q4], [π / 2, π / 4, -π]),
-                    ("cx", [q3, q4], Float64[]),
-                    ("u", [q4], [π / 2, 0.0, 3π / 4]),
-                    ("cx", [q1, q4], Float64[]),
-                    ("p", [q4], [π / 4]),
-                    ("cx", [q2, q4], Float64[]),
-                    ("p", [q4], [-π / 4]),
-                    ("cx", [q1, q4], Float64[]),
-                    ("p", [q4], [π / 4]),
-                    ("cx", [q2, q4], Float64[]),
-                    ("u", [q4], [π / 2, π / 4, 3π / 4]),
-                    ("cx", [q3, q4], Float64[]),
-                    ("u", [q4], [π / 2, 0.0, 3π / 4]),
-                ),
-            )
+            if name == "rcccx"
+                _mps_apply_gate_seq!(
+                    mps,
+                    (
+                        ("u", [q4], [π / 2, π / 4, -π]),
+                        ("cx", [q3, q4], Float64[]),
+                        ("u", [q4], [π / 2, 0.0, 3π / 4]),
+                        ("cx", [q1, q4], Float64[]),
+                        ("p", [q4], [π / 4]),
+                        ("cx", [q2, q4], Float64[]),
+                        ("p", [q4], [-π / 4]),
+                        ("cx", [q1, q4], Float64[]),
+                        ("p", [q4], [π / 4]),
+                        ("cx", [q2, q4], Float64[]),
+                        ("u", [q4], [π / 2, π / 4, 3π / 4]),
+                        ("cx", [q3, q4], Float64[]),
+                        ("u", [q4], [π / 2, 0.0, 3π / 4]),
+                    ),
+                )
+            else
+                # Exact 3-controlled X (c3x)
+                _mps_apply_gate_seq!(mps, (("h", [q4], Float64[]), ("cp", [q3, q4], [π / 2])))
+                _mps_apply_gate_seq!(mps, _ccx_1q2q_seq(q1, q2, q3))
+                _mps_apply_gate_seq!(mps, (("cp", [q3, q4], [-π / 2]),))
+                _mps_apply_gate_seq!(mps, _ccx_1q2q_seq(q1, q2, q3))
+                _mps_apply_gate_seq!(
+                    mps,
+                    (
+                        ("cp", [q2, q4], [π / 4]),
+                        ("cx", [q1, q2], Float64[]),
+                        ("cp", [q2, q4], [-π / 4]),
+                        ("cx", [q1, q2], Float64[]),
+                        ("cp", [q1, q4], [π / 4]),
+                        ("h", [q4], Float64[]),
+                    ),
+                )
+            end
+        else
+            throw(ArgumentError("Unsupported circuit instruction '$name' on $nq qubits in MPS simulator."))
         end
     end
     _mps_right_canonicalize!(mps)
@@ -1159,6 +1225,7 @@ function estimate_expectation(
             precision = precision,
             max_bond_dimension = max_bond_dimension,
             truncation_threshold = truncation_threshold,
+            seed = seed,
         )
         if shots !== nothing && shots > 0 && is_diagonal_ising(h)
             rng = seed === nothing ? Random.default_rng() : Random.MersenneTwister(Int(seed))
@@ -1169,9 +1236,22 @@ function estimate_expectation(
             end
             return base_val + acc_shots / shots
         end
+        rng = seed === nothing ? Random.default_rng() : Random.MersenneTwister(Int(seed))
         total = base_val
         for term in h.terms
-            total += _mps_pauli_term_expectation(mps, term)
+            exact_term = _mps_pauli_term_expectation(mps, term)
+            if shots === nothing || shots <= 0
+                total += exact_term
+            else
+                mu = clamp(exact_term / term.coeff, -1.0, 1.0)
+                p_plus = 0.5 * (1.0 + mu)
+                n_plus = 0
+                for _ in 1:shots
+                    rand(rng, Float64) < p_plus && (n_plus += 1)
+                end
+                est_mu = (2.0 * n_plus - shots) / shots
+                total += term.coeff * est_mu
+            end
         end
         return total
     end
@@ -1297,8 +1377,18 @@ function build_pce_basis_circuits(
     return circuits
 end
 
+function _resolve_basis_permutation(layout_permutation, basis::Char)
+    if layout_permutation === nothing
+        return nothing
+    elseif layout_permutation isa AbstractDict
+        return get(layout_permutation, basis, nothing)
+    else
+        return layout_permutation
+    end
+end
+
 """
-    decode_pce_expectations_from_basis_counts(basis_counts::AbstractDict{Char,<:AbstractDict}, pauli_strings::AbstractVector{<:AbstractString}; layout_permutation = nothing) -> Vector{Float64}
+    decode_pce_expectations_from_basis_counts(basis_counts::AbstractDict{Char,<:Any}, pauli_strings::AbstractVector{<:AbstractString}; layout_permutation = nothing) -> Vector{Float64}
 
 Compute empirical Pauli correlator expectations `<Π_i> ∈ [-1, 1]` from measurement counts
 or bitvectors in each active `'X'`, `'Y'`, `'Z'` basis.
@@ -1306,7 +1396,7 @@ or bitvectors in each active `'X'`, `'Y'`, `'Z'` basis.
 function decode_pce_expectations_from_basis_counts(
     basis_counts::AbstractDict{Char,<:Any},
     pauli_strings::AbstractVector{<:AbstractString};
-    layout_permutation::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+    layout_permutation = nothing,
 )::Vector{Float64}
     N = length(pauli_strings)
     N == 0 && return Float64[]
@@ -1322,6 +1412,7 @@ function decode_pce_expectations_from_basis_counts(
     for (idx, (basis, support_qubits)) in enumerate(parsed_terms)
         isempty(support_qubits) && (evs[idx] = 1.0; continue)
         raw_data = basis_counts[basis]
+        perm_b = _resolve_basis_permutation(layout_permutation, basis)
         if raw_data isa AbstractVector{BitVector}
             total_shots = length(raw_data)
             total_shots == 0 && continue
@@ -1329,7 +1420,7 @@ function decode_pce_expectations_from_basis_counts(
             for shot in raw_data
                 odd = false
                 for q in support_qubits
-                    bit_idx = layout_permutation === nothing ? q : Int(layout_permutation[q])
+                    bit_idx = perm_b === nothing ? q : Int(perm_b[q])
                     if shot[bit_idx]
                         odd = !odd
                     end
@@ -1346,7 +1437,7 @@ function decode_pce_expectations_from_basis_counts(
                 bits = sample_bits(String(key))
                 odd = false
                 for q in support_qubits
-                    bit_idx = layout_permutation === nothing ? q : Int(layout_permutation[q])
+                    bit_idx = perm_b === nothing ? q : Int(perm_b[q])
                     if bits[bit_idx] == 1
                         odd = !odd
                     end
@@ -1361,7 +1452,7 @@ function decode_pce_expectations_from_basis_counts(
 end
 
 """
-    estimate_pauli_expectations(qc::Qiskit.QuantumCircuit, pauli_strings::AbstractVector{<:AbstractString}; shots = nothing, seed = nothing, precision = "double") -> Vector{Float64}
+    estimate_pauli_expectations(qc::Qiskit.QuantumCircuit, pauli_strings::AbstractVector{<:AbstractString}; shots = nothing, seed = nothing, precision = "double", max_bond_dimension = nothing, truncation_threshold = nothing) -> Vector{Float64}
 
 Evaluate `<ψ|Π_i|ψ>` for a vector of Qiskit-ordered Pauli strings `pauli_strings`.
 """
@@ -1371,6 +1462,8 @@ function estimate_pauli_expectations(
     shots::Union{Nothing,Integer} = nothing,
     seed::Union{Nothing,Integer} = nothing,
     precision::Union{Nothing,AbstractString} = "double",
+    max_bond_dimension::Union{Nothing,Integer} = nothing,
+    truncation_threshold::Union{Nothing,Real} = nothing,
 )::Vector{Float64}
     N = length(pauli_strings)
     N == 0 && return Float64[]
@@ -1384,9 +1477,27 @@ function estimate_pauli_expectations(
                 shots = shots,
                 seed = b_seed,
                 precision = precision,
+                max_bond_dimension = max_bond_dimension,
+                truncation_threshold = truncation_threshold,
             )
         end
         return decode_pce_expectations_from_basis_counts(basis_counts, pauli_strings)
+    end
+
+    if _should_use_mps(qc.num_qubits; max_bond_dimension = max_bond_dimension)
+        mps = simulate_mps(
+            qc;
+            precision = precision,
+            max_bond_dimension = max_bond_dimension,
+            truncation_threshold = truncation_threshold,
+            seed = seed,
+        )
+        evs = Vector{Float64}(undef, N)
+        for (idx, pstr) in enumerate(pauli_strings)
+            _, pt = _parse_qiskit_pauli_string(pstr)
+            evs[idx] = _mps_pauli_term_expectation(mps, pt)
+        end
+        return evs
     end
 
     psi = simulate_statevector(qc; precision = precision, seed = seed)

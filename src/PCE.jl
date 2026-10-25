@@ -8,6 +8,7 @@ using ..QiskitOpt:
     backend_name,
     backend_version,
     bind_ansatz_parameters,
+    build_n_local_circuit,
     build_pce_basis_circuits,
     configured_execution_backend,
     decode_pce_expectations_from_basis_counts,
@@ -17,6 +18,7 @@ using ..QiskitOpt:
     empty_metadata,
     estimate_pauli_expectations,
     minimize_objective,
+    n_local_ansatz,
     optimizer_result_metadata,
     preset_pass_manager,
     python_float_vector,
@@ -574,17 +576,19 @@ function retrieve(
                 shots = shots_to_use,
                 seed = eval_seed,
                 precision = something(aer_config.precision, "double"),
+                max_bond_dimension = aer_config.mps_max_bond_dimension,
+                truncation_threshold = aer_config.mps_truncation_threshold,
             )
         end
 
         basis_circuits = build_pce_basis_circuits(base_qc, obs.pauli_strings)
         basis_counts = Dict{Char,Any}()
-        perm = ansatz_isa isa NativeAnsatz ? ansatz_isa.layout_permutation : nothing
+        basis_perms = Dict{Char,Vector{Int}}()
         for basis in sort!(collect(keys(basis_circuits)))
             trans_b = pass_manager.run(basis_circuits[basis])
-            perm_b = trans_b isa Qiskit.TranspileResult ? extract_layout_permutation(trans_b; num_variables = m) : perm
-            if perm === nothing
-                perm = perm_b
+            perm_b = extract_layout_permutation(trans_b; num_variables = m)
+            if perm_b !== nothing
+                basis_perms[basis] = perm_b
             end
             exec_b = trans_b isa Qiskit.TranspileResult ? trans_b.circuit : trans_b
             basis_counts[basis] = _run_circuit_with_hook(
@@ -596,7 +600,7 @@ function retrieve(
         return decode_pce_expectations_from_basis_counts(
             basis_counts,
             obs.pauli_strings;
-            layout_permutation = perm,
+            layout_permutation = basis_perms,
         )
     end
 

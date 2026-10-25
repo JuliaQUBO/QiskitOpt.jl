@@ -2119,6 +2119,152 @@ end
         MOI.optimize!(m_test)
         @test MOI.get(m_test, MOI.ObjectiveValue(1)) ≈ exact_opt_val
     end
+
+    # 5. Sparse 5-qubit target where only physical qubits (4, 5) are coupled (P1-1, P1-3)
+    sparse_5q_target = QiskitOpt.Qiskit.Target(5)
+    for gsym in (:rz, :sx, :x, :id)
+        idx = findfirst(t -> t[1] === gsym, QiskitOpt.Qiskit.GATE_TABLE)
+        _, gate_op, _, _ = QiskitOpt.Qiskit.GATE_TABLE[idx]
+        entry = QiskitOpt.Qiskit.target_entry_gate(gate_op)
+        for q in UInt32(0):UInt32(4)
+            q_arr = UInt32[q]
+            GC.@preserve q_arr QiskitOpt._LibQiskit.qk_target_entry_add_property(entry.ptr, pointer(q_arr), UInt32(1), 0.0, 0.0)
+        end
+        QiskitOpt.Qiskit.qk_target_add_instruction(sparse_5q_target, entry)
+    end
+    cx_idx = findfirst(t -> t[1] === :cx, QiskitOpt.Qiskit.GATE_TABLE)
+    _, cx_op, _, _ = QiskitOpt.Qiskit.GATE_TABLE[cx_idx]
+    cx_entry = QiskitOpt.Qiskit.target_entry_gate(cx_op)
+    for pair in (UInt32[3, 4], UInt32[4, 3])
+        GC.@preserve pair QiskitOpt._LibQiskit.qk_target_entry_add_property(cx_entry.ptr, pointer(pair), UInt32(2), 0.0, 0.0)
+    end
+    QiskitOpt.Qiskit.qk_target_add_instruction(sparse_5q_target, cx_entry)
+    meas_5q = QiskitOpt.Qiskit.target_entry_measure()
+    for q in UInt32(0):UInt32(4)
+        q_arr = UInt32[q]
+        GC.@preserve q_arr QiskitOpt._LibQiskit.qk_target_entry_add_property(meas_5q.ptr, pointer(q_arr), UInt32(1), 0.0, 0.0)
+    end
+    QiskitOpt.Qiskit.qk_target_add_instruction(sparse_5q_target, meas_5q)
+
+    sparse_5q_backend = QiskitOpt.NativeFakeBackend("sparse_5q_test", "1.0.0", 5, sparse_5q_target)
+    for (opt_factory, opt_mod) in (
+        (QAOA.Optimizer, QAOA),
+        (VQE.Optimizer, VQE),
+        (PCE.Optimizer, PCE),
+    )
+        m_5q, x_5q = build_model(opt_factory; Q = [-1.0 2.0; 0.0 -1.0])
+        MOI.set(m_5q, opt_mod.IBMFakeBackend(), (; kwargs...) -> sparse_5q_backend)
+        MOI.set(m_5q, opt_mod.MaximumIterations(), 2)
+        MOI.set(m_5q, opt_mod.NumberOfReads(), 32)
+        MOI.set(m_5q, QUBODrivers.RandomSeed(), 42)
+        MOI.optimize!(m_5q)
+        assert_solution_consistency(m_5q, x_5q; Q = [-1.0 2.0; 0.0 -1.0])
+
+        # Also test non-local / cloud path with the sparse 5-qubit target
+        cloud_5q_backend = (
+            name = "sparse_5q_cloud",
+            version = "2.0.0",
+            num_qubits = 5,
+            target = sparse_5q_target,
+            run = (qc; shots = 32) -> begin
+                # Verify only ISA instructions + measure are present and only active clbits are measured
+                @test qc.num_qubits == 5
+                @test qc.num_clbits <= 2
+                for inst in qc.data
+                    @test !(inst.name in ("h", "rzz", "rx", "ry"))
+                end
+                counts = QiskitOpt.sample_from_circuit(qc; shots = shots, seed = 42)
+                return (
+                    job = (job_id = () -> nothing, status = () -> "Completed"),
+                    result = () -> (get_counts = () -> counts, counts = counts),
+                    get_counts = () -> counts,
+                    counts = counts,
+                )
+            end,
+        )
+        prev_sb = QiskitOpt._runtime_service_builder[]
+        QiskitOpt._runtime_service_builder[] = (; kwargs...) -> (
+            backend = _ -> cloud_5q_backend,
+        )
+        try
+            m_cloud_5q, x_cloud_5q = build_model(opt_factory; Q = [-1.0 2.0; 0.0 -1.0])
+            MOI.set(m_cloud_5q, opt_mod.IBMBackend(), "sparse_5q_cloud")
+            MOI.set(m_cloud_5q, opt_mod.IsLocal(), false)
+            MOI.set(m_cloud_5q, opt_mod.MaximumIterations(), 2)
+            MOI.set(m_cloud_5q, opt_mod.NumberOfReads(), 32)
+            MOI.set(m_cloud_5q, QUBODrivers.RandomSeed(), 42)
+            MOI.optimize!(m_cloud_5q)
+            assert_solution_consistency(m_cloud_5q, x_cloud_5q; Q = [-1.0 2.0; 0.0 -1.0])
+        finally
+            QiskitOpt._runtime_service_builder[] = prev_sb
+        end
+    end
+
+    # 6. GAS multi-controlled phase diffuser for n=4 and n=5 key qubits (P1-2)
+    gas_qc_4 = QiskitOpt.build_gas_circuit(4, fill(-1.0, 4), zeros(4, 4), -3.0; num_grover_iterations = 3)
+    psi_gas_4 = QiskitOpt.simulate_statevector(gas_qc_4)
+    prob_1111 = sum(abs2(psi_gas_4[idx]) for idx in 1:length(psi_gas_4) if ((idx - 1) & 0x0f) == 0x0f)
+    @test prob_1111 > 0.95
+
+    gas_qc_5 = QiskitOpt.build_gas_circuit(5, fill(-1.0, 5), zeros(5, 5), -4.0; num_grover_iterations = 4)
+    psi_gas_5 = QiskitOpt.simulate_statevector(gas_qc_5)
+    prob_11111 = sum(abs2(psi_gas_5[idx]) for idx in 1:length(psi_gas_5) if ((idx - 1) & 0x1f) == 0x1f)
+    @test prob_11111 > 0.95
+
+    # 7. NativeAnsatz(:efficient_su2, ...) and NativeAnsatz(:n_local, ...) / build_n_local_circuit (P1-4)
+    su2_sym = QiskitOpt.NativeAnsatz(:efficient_su2, 3; reps = 3)
+    @test QiskitOpt.num_parameters(su2_sym) == 24
+    nloc_sym = QiskitOpt.NativeAnsatz(:n_local, 3; rotation_blocks = [:ry], entanglement_blocks = :cz, reps = 2)
+    @test QiskitOpt.num_parameters(nloc_sym) == 9
+    nloc_qc = QiskitOpt.build_n_local_circuit(3, collect(1:9); rotation_blocks = [:ry], entanglement_blocks = :cz, reps = 2)
+    @test nloc_qc.num_qubits == 3
+    @test_throws ArgumentError QiskitOpt.NativeAnsatz(:unknown_ansatz, 3)
+
+    # 8. MPS rcccx, reset, non-diagonal shot noise, PCE MPS forwarding, and Ising identity term offset (P2-1, P3-1)
+    qc_rcccx = QiskitOpt.Qiskit.QuantumCircuit(4)
+    for q in 1:4
+        QiskitOpt.Qiskit.x!(qc_rcccx, q)
+    end
+    QiskitOpt.Qiskit.rcccx!(qc_rcccx, 1, 2, 3, 4)
+    mps_rcccx = QiskitOpt.simulate_mps(qc_rcccx)
+    sv_rcccx = QiskitOpt.simulate_statevector(qc_rcccx)
+    for q in 1:4
+        term_z = QiskitOpt.PauliTerm(1.0, [q], [:Z])
+        @test QiskitOpt._mps_pauli_term_expectation(mps_rcccx, term_z) ≈
+              QiskitOpt._statevector_pauli_term_expectation(sv_rcccx, term_z) atol=1e-10
+    end
+
+    qc_rst = QiskitOpt.Qiskit.QuantumCircuit(2)
+    QiskitOpt.Qiskit.x!(qc_rst, 1)
+    QiskitOpt.Qiskit.reset!(qc_rst, 1)
+    mps_rst = QiskitOpt.simulate_mps(qc_rst)
+    @test QiskitOpt._mps_pauli_term_expectation(mps_rst, QiskitOpt.PauliTerm(1.0, [1], [:Z])) ≈ 1.0 atol=1e-10
+
+    qc_plus = QiskitOpt.Qiskit.QuantumCircuit(2)
+    QiskitOpt.Qiskit.h!(qc_plus, 1)
+    QiskitOpt.Qiskit.h!(qc_plus, 2)
+    h_x = QiskitOpt.IsingHamiltonian(
+        2,
+        0.0,
+        zeros(2),
+        Dict{Tuple{Int,Int},Float64}(),
+        [QiskitOpt.PauliTerm(1.0, [1], [:X])],
+    )
+    ev_mps_x = QiskitOpt.estimate_expectation(qc_plus, h_x; shots = 64, seed = 42, max_bond_dimension = 4)
+    @test isapprox(ev_mps_x, 1.0; atol = 1e-8)
+
+    evs_mps_pce = QiskitOpt.estimate_pauli_expectations(qc_plus, ["XI", "IX"]; shots = nothing, max_bond_dimension = 4)
+    @test isapprox(evs_mps_pce, [1.0, 1.0]; atol = 1e-8)
+
+    h_id = QiskitOpt.IsingHamiltonian(
+        2,
+        2.0,
+        zeros(2),
+        Dict{Tuple{Int,Int},Float64}(),
+        [QiskitOpt.PauliTerm(1.5, Int[], Symbol[]), QiskitOpt.PauliTerm(0.5, [1], [:Z])],
+    )
+    @test h_id.offset ≈ 3.5
+    @test length(h_id.terms) == 1
 end
 
 @testset "QUBODrivers compatibility suite" begin
