@@ -1,7 +1,6 @@
 module QiskitOpt
 
 using LinearAlgebra
-using PythonCall
 using QUBO
 using Qiskit
 using QiskitIBMRuntime
@@ -14,6 +13,38 @@ include("simulator.jl")
 include("optimizer.jl")
 
 const DEFAULT_RUNTIME_CHANNEL = "ibm_quantum_platform"
+
+# Optional PythonCall extension hooks (populated by `QiskitOptPythonCallExt` when `PythonCall` is loaded)
+const _is_py_hook = Ref{Function}(x -> false)
+const _py_import_hook = Ref{Function}(
+    module_name -> error("PythonCall is not loaded; run `using PythonCall` to import Python module '$(module_name)'."),
+)
+const _py_executable_hook = Ref{Function}(() -> nothing)
+const _py_version_hook = Ref{Function}(() -> nothing)
+const _py_str_hook = Ref{Function}(x -> string(x))
+const _py_int_hook = Ref{Function}(x -> Int(x))
+const _py_float_hook = Ref{Function}(x -> Float64(x))
+const _py_bool_hook = Ref{Function}(x -> Bool(x))
+const _py_len_hook = Ref{Function}(x -> length(x))
+const _py_hasattr_hook = Ref{Function}((x, name) -> hasproperty(x, Symbol(name)))
+const _py_is_none_hook = Ref{Function}(x -> x === nothing)
+const _py_int_arg_hook = Ref{Function}(x -> Int(x))
+const _py_list_arg_hook = Ref{Function}(x -> collect(x))
+const _py_exception_type_hook = Ref{Function}(err -> nothing)
+const _py_int_vec_hook = Ref{Function}(x -> Int[Int(v) for v in x])
+const _py_float_vec_hook = Ref{Function}(x -> Float64[Float64(v) for v in x])
+
+_is_py(x) = _is_py_hook[](x)
+_py_str(x) = x isa AbstractString ? String(x) : _py_str_hook[](x)
+_py_int(x) = x isa Integer ? Int(x) : _py_int_hook[](x)
+_py_float(x) = x isa Real ? Float64(x) : _py_float_hook[](x)
+_py_bool(x) = x isa Bool ? x : _py_bool_hook[](x)
+_py_len(x) = _is_py(x) ? _py_len_hook[](x) : length(x)
+_py_hasattr(x, name::AbstractString) = _is_py(x) ? _py_hasattr_hook[](x, String(name)) : hasproperty(x, Symbol(name))
+_py_is_none(x) = x === nothing || (_is_py(x) && _py_is_none_hook[](x))
+_py_int_arg(x::Integer) = _py_int_arg_hook[](Int(x))
+_py_list_arg(x) = _py_list_arg_hook[](x)
+_py_int_vec(x) = _is_py(x) ? _py_int_vec_hook[](x) : Int[Int(v) for v in x]
 
 struct PythonPackageError <: Exception
     module_name::String
@@ -90,7 +121,7 @@ end
 
 function python_executable()
     try
-        return PythonCall.pyconvert(String, PythonCall.pyimport("sys").executable)
+        return _py_executable_hook[]()
     catch
         return nothing
     end
@@ -98,7 +129,7 @@ end
 
 function _import_python_module(module_name::AbstractString, package_name::AbstractString)
     try
-        return PythonCall.pyimport(module_name)
+        return _py_import_hook[](String(module_name))
     catch err
         throw(
             PythonPackageError(
@@ -229,7 +260,7 @@ end
 
 function _python_module_version(py_module)
     try
-        return PythonCall.pyconvert(String, getproperty(py_module, :__version__))
+        return _py_str(getproperty(py_module, :__version__))
     catch
         return nothing
     end
@@ -252,7 +283,7 @@ function _diagnose_pythoncall()
     return RuntimeDiagnostic(
         name="PythonCall",
         ok=ok,
-        version=_module_version(PythonCall),
+        version=_py_version_hook[](),
         message=message,
     )
 end
@@ -349,6 +380,7 @@ end
 
 function check_runtime(;
     local_backend::Bool=true,
+    require_aer::Bool=false,
     ibm::Bool=false,
     iqm::Bool=false,
     verbose::Bool=true,
@@ -474,7 +506,7 @@ end
 
 function Base.getproperty(rj::NativeRuntimeJob, sym::Symbol)
     if sym === :job_id
-        return () -> "ibm_runtime_job"
+        return () -> nothing
     elseif sym === :status
         return () -> string(QiskitIBMRuntime.get_job_status(getfield(rj, :job), getfield(rj, :service)))
     elseif sym === :samples
@@ -491,11 +523,14 @@ function Base.getproperty(rj::NativeRuntimeJob, sym::Symbol)
                 poll_interval = poll_interval,
             )
             counts = bitvectors_to_counts(s)
-            (get_counts = () -> counts, samples = s, counts = counts)
+            (get_counts = () -> counts, samples = s, counts = s)
         end
     end
     return getfield(rj, sym)
 end
+
+Base.propertynames(::NativeRuntimeJob; private::Bool = false) =
+    (:service, :job, :job_id, :status, :samples, :result)
 
 struct NativeRuntimeBackend
     service::QiskitIBMRuntime.Service
@@ -530,12 +565,14 @@ function Base.getproperty(rb::NativeRuntimeBackend, sym::Symbol)
             )
             rj = NativeRuntimeJob(getfield(rb, :service), raw_job)
             s = QiskitIBMRuntime.get_sampler_job_results(raw_job, getfield(rb, :service))
-            counts = bitvectors_to_counts(s)
-            (job = rj, samples = s, counts = counts, get_counts = () -> counts)
+            (job = rj, samples = s, counts = s, get_counts = () -> bitvectors_to_counts(s))
         end
     end
     return getfield(rb, sym)
 end
+
+Base.propertynames(::NativeRuntimeBackend; private::Bool = false) =
+    (:service, :backend, :target, :name, :version, :backend_version, :num_qubits, :submit_sampler, :run)
 
 struct NativeRuntimeService
     service::QiskitIBMRuntime.Service
@@ -774,6 +811,9 @@ function Base.getproperty(b::NativeLocalBackend, sym::Symbol)
     return getfield(b, sym)
 end
 
+Base.propertynames(::NativeLocalBackend; private::Bool = false) =
+    (:name, :version, :config, :target, :options, :backend_version, :num_qubits, :run)
+
 struct NativeFakeBackend
     name::String
     version::String
@@ -809,9 +849,12 @@ function Base.getproperty(b::NativeFakeBackend, sym::Symbol)
     return getfield(b, sym)
 end
 
+Base.propertynames(::NativeFakeBackend; private::Bool = false) =
+    (:name, :version, :num_qubits, :target, :backend_version, :run)
+
 function _extract_backend_target(backend)::Union{Nothing,Qiskit.Target}
     backend isa Qiskit.Target && return backend
-    if !(backend isa PythonCall.Py) && hasproperty(backend, :target)
+    if !_is_py(backend) && hasproperty(backend, :target)
         try
             t = getproperty(backend, :target)
             t isa Qiskit.Target && return t
@@ -911,7 +954,7 @@ end
 function preset_pass_manager(backend; optimization_level::Integer = 3, seed_transpiler = nothing)
     if backend === nothing || backend isa Qiskit.Target
         return NativePassManager(backend, Int(optimization_level), seed_transpiler === nothing ? nothing : Int(seed_transpiler))
-    elseif !(backend isa PythonCall.Py) && hasproperty(backend, :target) && getproperty(backend, :target) isa Union{Nothing,Qiskit.Target}
+    elseif !_is_py(backend) && hasproperty(backend, :target) && getproperty(backend, :target) isa Union{Nothing,Qiskit.Target}
         return NativePassManager(getproperty(backend, :target), Int(optimization_level), seed_transpiler === nothing ? nothing : Int(seed_transpiler))
     end
 
@@ -940,9 +983,9 @@ function backend_name(backend)
                 res isa AbstractString && return String(res)
             end
             try
-                return PythonCall.pyconvert(String, val)
+                return _py_str(val)
             catch
-                return PythonCall.pyconvert(String, val())
+                return _py_str(val())
             end
         catch
         end
@@ -952,10 +995,7 @@ end
 
 function python_type_module(object)
     try
-        return PythonCall.pyconvert(
-            String,
-            getproperty(getproperty(object, :__class__), :__module__),
-        )
+        return _py_str(getproperty(getproperty(object, :__class__), :__module__))
     catch
         return nothing
     end
@@ -981,7 +1021,7 @@ function backend_version(backend)
             val = getproperty(backend, property)
             val isa AbstractString && return String(val)
             val isa VersionNumber && return string(val)
-            return PythonCall.pyconvert(String, PythonCall.pystr(val))
+            return _py_str(val)
         catch
         end
     end
@@ -1006,7 +1046,7 @@ function sample_bits(key::AbstractString)
 end
 
 function sample_bits(key)
-    bitstring = replace(PythonCall.pyconvert(String, key), " " => "")
+    bitstring = replace(_py_str(key), " " => "")
     return reverse(Int[(digit == '1') for digit in bitstring])
 end
 
@@ -1103,7 +1143,7 @@ function python_int_property(object, name::Symbol)
         val = getproperty(object, name)
         val isa Integer && return Int(val)
         val === nothing && return nothing
-        return PythonCall.pyconvert(Int, val)
+        return _py_int(val)
     catch
         return nothing
     end
@@ -1114,7 +1154,7 @@ function python_float_property(object, name::Symbol)
         val = getproperty(object, name)
         val isa Real && return Float64(val)
         val === nothing && return nothing
-        return PythonCall.pyconvert(Float64, val)
+        return _py_float(val)
     catch
         return nothing
     end
@@ -1125,7 +1165,7 @@ function python_bool_property(object, name::Symbol)
         val = getproperty(object, name)
         val isa Bool && return val
         val === nothing && return nothing
-        return PythonCall.pyconvert(Bool, val)
+        return _py_bool(val)
     catch
         return nothing
     end
@@ -1136,7 +1176,7 @@ function python_string_property(object, name::Symbol)
         val = getproperty(object, name)
         val isa AbstractString && return String(val)
         val === nothing && return nothing
-        return PythonCall.pyconvert(String, PythonCall.pystr(val))
+        return _py_str(val)
     catch
         return nothing
     end
@@ -1147,21 +1187,14 @@ function python_float_vector(object::AbstractVector{<:Real})
 end
 
 function python_float_vector(object)
-    try
-        return PythonCall.pyconvert(Vector{Float64}, object)
-    catch
-        return Float64[PythonCall.pyconvert(Float64, value) for value in object]
-    end
+    return _py_float_vec_hook[](object)
 end
 
 qiskit_parameter_names(ansatz::NativeAnsatz) = copy(ansatz.parameter_names)
 qiskit_parameter_names(::Qiskit.QuantumCircuit) = String[]
 
 function qiskit_parameter_names(circuit)
-    return String[
-        PythonCall.pyconvert(String, PythonCall.pystr(parameter))
-        for parameter in circuit.parameters
-    ]
+    return String[_py_str(parameter) for parameter in circuit.parameters]
 end
 
 function validate_initial_parameters(
@@ -1511,6 +1544,8 @@ function Base.getindex(r::IsingQuadraticProgramResult, idx::Integer)
         return r.observable
     elseif idx == 2
         return r.offset
+    elseif idx == 3
+        return r.hamiltonian
     end
     throw(BoundsError(r, idx))
 end

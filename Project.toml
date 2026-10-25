@@ -5,11 +5,16 @@ version = "0.7.2"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
 QUBO = "ce8c2e91-a970-4681-856b-16178c24a30c"
 Qiskit = "91d9a17d-f964-4b6c-a3c4-2f4cfdea2c95"
 QiskitIBMRuntime = "1f74880b-c9c8-4af4-a333-b5b4aaaec6f5"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[weakdeps]
+PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
+
+[extensions]
+QiskitOptPythonCallExt = "PythonCall"
 
 [compat]
 PythonCall = "0.9"
@@ -17,3 +22,4 @@ QUBO = "0.6"
 Qiskit = "0.6"
 QiskitIBMRuntime = "0.3"
 julia = "1.10"
+

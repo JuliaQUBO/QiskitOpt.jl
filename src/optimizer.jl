@@ -96,30 +96,34 @@ function minimize_objective(
 
         x_sweep_start = copy(x_best)
         improved_in_sweep = false
-
-        # On the first sweep when d >= 2, probe a simultaneous multi-coordinate
-        # rotation so two-qubit correlator objectives (e.g. PCE <XX>, <YY> starting
-        # at θ = 0) escape the single-qubit product-state stationary manifold.
-        if nit == 0 && d >= 2 && nfev < max_iter
-            nit += 1
-            x_diag = Vector{Float64}(undef, d)
-            @inbounds for i in 1:d
-                x_diag[i] = x_best[i] + (isodd(i) ? 1.5 : -1.5) * rho
-            end
-            f_diag = Float64(f(copy(x_diag)))
-            nfev += 1
-            if f_diag < f_best
-                x_best = x_diag
-                f_best = f_diag
-                improved_in_sweep = true
-            end
-        end
+        first_sweep = (nit == 0)
+        unimproved_coords = Int[]
 
         for coord in 1:d
             nfev >= max_iter && break
+
+            # If the first 3 single-coordinate probes on the initial sweep do not improve
+            # (e.g. PCE <XX>, <YY> starting at θ = 0), probe a simultaneous multi-coordinate
+            # rotation to escape the single-qubit product-state stationary manifold.
+            if first_sweep && coord == 4 && !improved_in_sweep && nfev < max_iter
+                nit += 1
+                x_diag = Vector{Float64}(undef, d)
+                @inbounds for i in 1:d
+                    x_diag[i] = x_best[i] + (isodd(i) ? 1.5 : -1.5) * rho
+                end
+                f_diag = Float64(f(copy(x_diag)))
+                nfev += 1
+                if f_diag < f_best
+                    x_best = x_diag
+                    f_best = f_diag
+                    improved_in_sweep = true
+                end
+                nfev >= max_iter && break
+            end
+
             nit += 1
 
-            # Try primary direction along coordinate `coord`
+            # Forward simplex/compass probe along coordinate `coord`
             dir = signs[coord]
             x_try = copy(x_best)
             x_try[coord] += dir * rho
@@ -130,24 +134,24 @@ function minimize_objective(
                 x_best = x_try
                 f_best = f_try
                 improved_in_sweep = true
-                continue
+            else
+                push!(unimproved_coords, coord)
             end
+        end
 
-            # If budget remains, try opposite direction along `coord`
-            if nfev < max_iter
-                x_opp = copy(x_best)
-                x_opp[coord] -= dir * rho
-                f_opp = Float64(f(copy(x_opp)))
-                nfev += 1
+        for coord in unimproved_coords
+            nfev >= max_iter && break
+            dir = signs[coord]
+            x_opp = copy(x_best)
+            x_opp[coord] -= dir * rho
+            f_opp = Float64(f(copy(x_opp)))
+            nfev += 1
 
-                if f_opp < f_best
-                    x_best = x_opp
-                    f_best = f_opp
-                    signs[coord] = -dir
-                    improved_in_sweep = true
-                else
-                    signs[coord] = -dir
-                end
+            if f_opp < f_best
+                x_best = x_opp
+                f_best = f_opp
+                signs[coord] = -dir
+                improved_in_sweep = true
             else
                 signs[coord] = -dir
             end

@@ -567,6 +567,27 @@ function simulate_statevector(
     return psi
 end
 
+"""
+    statevector_probabilities_dict(qc::Qiskit.QuantumCircuit; precision = "double") -> Dict{String,Float64}
+
+Return Qiskit-style MSB-first bitstring (`c_n...c_1`) probabilities for `qc`.
+"""
+function statevector_probabilities_dict(
+    qc::Qiskit.QuantumCircuit;
+    precision::Union{Nothing,AbstractString} = "double",
+)::Dict{String,Float64}
+    psi = simulate_statevector(qc; precision = precision)
+    n = qc.num_qubits
+    out = Dict{String,Float64}()
+    for idx0 in 0:(length(psi) - 1)
+        p = Float64(abs2(psi[idx0 + 1]))
+        p > 0.0 || continue
+        key = string(idx0, base = 2, pad = max(1, n))
+        out[key] = get(out, key, 0.0) + p
+    end
+    return out
+end
+
 # ==============================================================================
 # Matrix Product State (MPS) Simulator for large circuits (e.g. 36 qubits)
 # ==============================================================================
@@ -765,6 +786,39 @@ function _mps_right_canonicalize!(mps::MatrixProductState{T}) where {T<:Abstract
     return mps
 end
 
+function _mps_apply_gate_seq!(mps::MatrixProductState{T}, seq) where {T<:AbstractFloat}
+    for (gname, gq, gp) in seq
+        if length(gq) == 1
+            u00, u01, u10, u11 = _gate_1q_matrix(gname, gp, T)
+            _mps_apply_1q!(mps, gq[1], u00, u01, u10, u11)
+        else
+            M = _gate_2q_matrix(gname, gp, T)
+            _mps_apply_2q!(mps, gq[1], gq[2], M)
+        end
+    end
+    return mps
+end
+
+function _ccx_1q2q_seq(q1::Int, q2::Int, q3::Int)
+    return (
+        ("h", [q3], Float64[]),
+        ("cx", [q2, q3], Float64[]),
+        ("tdg", [q3], Float64[]),
+        ("cx", [q1, q3], Float64[]),
+        ("t", [q3], Float64[]),
+        ("cx", [q2, q3], Float64[]),
+        ("tdg", [q3], Float64[]),
+        ("cx", [q1, q3], Float64[]),
+        ("t", [q2], Float64[]),
+        ("t", [q3], Float64[]),
+        ("h", [q3], Float64[]),
+        ("cx", [q1, q2], Float64[]),
+        ("t", [q1], Float64[]),
+        ("tdg", [q2], Float64[]),
+        ("cx", [q1, q2], Float64[]),
+    )
+end
+
 function simulate_mps(
     qc::Qiskit.QuantumCircuit;
     precision::Union{Nothing,AbstractString} = "double",
@@ -794,25 +848,52 @@ function simulate_mps(
         elseif nq == 2
             M = _gate_2q_matrix(name, inst.params, T)
             _mps_apply_2q!(mps, qubits1[1], qubits1[2], M)
-        elseif nq == 3 && name == "ccx"
+        elseif nq == 3
             q1, q2, q3 = qubits1[1], qubits1[2], qubits1[3]
-            for (gname, gq, gp) in (
-                ("u", [q3], [π / 2, π / 4, -π]),
-                ("cx", [q2, q3], Float64[]),
-                ("p", [q3], [-π / 4]),
-                ("cx", [q1, q3], Float64[]),
-                ("p", [q3], [π / 4]),
-                ("cx", [q2, q3], Float64[]),
-                ("u", [q3], [π / 2, 0.0, 3π / 4]),
-            )
-                if length(gq) == 1
-                    u00, u01, u10, u11 = _gate_1q_matrix(gname, gp, T)
-                    _mps_apply_1q!(mps, gq[1], u00, u01, u10, u11)
-                else
-                    M = _gate_2q_matrix(gname, gp, T)
-                    _mps_apply_2q!(mps, gq[1], gq[2], M)
-                end
+            if name == "ccx"
+                _mps_apply_gate_seq!(mps, _ccx_1q2q_seq(q1, q2, q3))
+            elseif name == "ccz"
+                _mps_apply_gate_seq!(mps, (("h", [q3], Float64[]),))
+                _mps_apply_gate_seq!(mps, _ccx_1q2q_seq(q1, q2, q3))
+                _mps_apply_gate_seq!(mps, (("h", [q3], Float64[]),))
+            elseif name == "cswap"
+                _mps_apply_gate_seq!(mps, (("cx", [q3, q2], Float64[]),))
+                _mps_apply_gate_seq!(mps, _ccx_1q2q_seq(q1, q2, q3))
+                _mps_apply_gate_seq!(mps, (("cx", [q3, q2], Float64[]),))
+            elseif name == "rccx"
+                _mps_apply_gate_seq!(
+                    mps,
+                    (
+                        ("u", [q3], [π / 2, π / 4, -π]),
+                        ("cx", [q2, q3], Float64[]),
+                        ("p", [q3], [-π / 4]),
+                        ("cx", [q1, q3], Float64[]),
+                        ("p", [q3], [π / 4]),
+                        ("cx", [q2, q3], Float64[]),
+                        ("u", [q3], [π / 2, 0.0, 3π / 4]),
+                    ),
+                )
             end
+        elseif nq == 4 && name == "rcccx"
+            q1, q2, q3, q4 = qubits1[1], qubits1[2], qubits1[3], qubits1[4]
+            _mps_apply_gate_seq!(
+                mps,
+                (
+                    ("u", [q4], [π / 2, π / 4, -π]),
+                    ("cx", [q3, q4], Float64[]),
+                    ("u", [q4], [π / 2, 0.0, 3π / 4]),
+                    ("cx", [q1, q4], Float64[]),
+                    ("p", [q4], [π / 4]),
+                    ("cx", [q2, q4], Float64[]),
+                    ("p", [q4], [-π / 4]),
+                    ("cx", [q1, q4], Float64[]),
+                    ("p", [q4], [π / 4]),
+                    ("cx", [q2, q4], Float64[]),
+                    ("u", [q4], [π / 2, π / 4, 3π / 4]),
+                    ("cx", [q3, q4], Float64[]),
+                    ("u", [q4], [π / 2, 0.0, 3π / 4]),
+                ),
+            )
         end
     end
     _mps_right_canonicalize!(mps)
@@ -1389,8 +1470,8 @@ function gas_grover_search(
     unif_amp = 1.0 / sqrt(Float64(dim))
 
     while no_improvement < max_iter
-        rot_upper = max(0, floor(Int, k_schedule) - 1)
-        r = rand(rng_opt, 0:rot_upper)
+        rot_upper = max(1, ceil(Int, k_schedule))
+        r = rand(rng_opt, 1:rot_upper)
 
         fill!(psi, unif_amp)
         for _ in 1:r

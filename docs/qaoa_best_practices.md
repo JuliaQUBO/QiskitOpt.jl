@@ -231,9 +231,9 @@ catch err
 end
 ```
 
-The live path resolves the named backend with `QiskitRuntimeService`,
-transpiles the measured circuit with the requested seed and optimization level,
-then submits it through `qiskit_ibm_runtime.SamplerV2`. Credentials should come
+The live path resolves the named backend through `QiskitIBMRuntime.jl` (`QiskitIBMRuntime.Service`, `backend_search` / `least_busy`, `target_from_backend`),
+transpiles the measured circuit with `Qiskit.transpile` using the requested seed and optimization level,
+then submits it through `QiskitIBMRuntime.run_sampler_job`. Credentials should come
 from normal Qiskit Runtime account storage or environment variables such as
 `QISKIT_IBM_TOKEN`; QiskitOpt does not persist them. Set
 `QISKIT_IBM_INSTANCE` or pass `instance=...` when Runtime cannot auto-resolve an
@@ -249,15 +249,15 @@ plus obvious `token=...`, `instance=...`, `account_file=...`, and `crn:...`
 fragments from captured errors. Treat that as a final guardrail, not a reason to
 store credentials in project outputs.
 
-Treat returned counts as Qiskit count keys. Convert keys with
-`QiskitOpt.QAOA.count_key_bits(key; layout_permutation=...)`, or decode a count
-dictionary directly into a scored `SampleSet` with
+For string count keys (`c_n...c_1`), convert keys with
+`QiskitOpt.QAOA.count_key_bits(key; layout_permutation=...)`, or decode either a string count
+dictionary or LSB-first `QiskitIBMRuntime.Samples` (`Vector{BitVector}`) directly into a scored `SampleSet` with
 `QiskitOpt.QAOA.decode_counts_sampleset(model, counts; layout_permutation=...)`.
 For non-IBM Qiskit `BackendV2` targets such as IQM backends (`iqm-client[qiskit]`
-providing `iqm.qiskit_iqm`), use `QiskitOpt.QAOA.iqm_runtime_handoff` (dry-run by
+providing `iqm.qiskit_iqm` via the optional `QiskitOptPythonCallExt` extension when `PythonCall` is loaded), use `QiskitOpt.QAOA.iqm_runtime_handoff` (dry-run by
 default, redacting `IQM_TOKEN`, `IQM_TOKENS_FILE`, and `IQM_SERVER_URL`) or
 `QiskitOpt.QAOA.execute_fixed_parameter_circuit` so execution and `SampleSet`
-decoding do not depend on `qiskit_ibm_runtime`.
+decoding do not depend on `QiskitIBMRuntime.jl` credentials.
 
 ## Moving From Aer To IBM Hardware
 

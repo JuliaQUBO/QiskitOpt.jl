@@ -448,6 +448,22 @@ Build a concrete `p = reps`-layer QAOA `Qiskit.QuantumCircuit` with parameter or
 """
 function build_qaoa_circuit(
     hamiltonian::IsingHamiltonian,
+    theta::AbstractVector{<:Real};
+    reps::Integer = length(theta) ÷ 2,
+    initial_state = nothing,
+    mixer = nothing,
+)::Qiskit.QuantumCircuit
+    return build_qaoa_circuit(
+        hamiltonian,
+        reps,
+        theta;
+        initial_state = initial_state,
+        mixer = mixer,
+    )
+end
+
+function build_qaoa_circuit(
+    hamiltonian::IsingHamiltonian,
     reps::Integer,
     theta::AbstractVector{<:Real};
     initial_state = nothing,
@@ -558,6 +574,20 @@ end
 Create a `NativeAnsatz` wrapping `build_qaoa_circuit` with parameter names
 `["β[0]", ..., "β[p-1]", "γ[0]", ..., "γ[p-1]"]`.
 """
+function qaoa_ansatz(
+    obs::Qiskit.SparseObservable;
+    reps::Integer = 1,
+    initial_state = nothing,
+    mixer = nothing,
+)::NativeAnsatz
+    return qaoa_ansatz(
+        parse_sparse_observable(obs);
+        reps = reps,
+        initial_state = initial_state,
+        mixer = mixer,
+    )
+end
+
 function qaoa_ansatz(
     hamiltonian::IsingHamiltonian;
     reps::Integer = 1,

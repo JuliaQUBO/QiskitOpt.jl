@@ -417,6 +417,18 @@ Remap logical qubit indices `q` of `h` to physical qubit indices `layout_perm[q]
 """
 function apply_layout_to_hamiltonian(
     h::IsingHamiltonian,
+    layout::Qiskit.TranspileLayout;
+    num_physical_qubits::Union{Nothing,Integer} = nothing,
+)::IsingHamiltonian
+    perm = transpile_layout_final_permutation(layout)
+    n_phys = num_physical_qubits === nothing ?
+        max(h.num_qubits, Int(_LibQiskit.qk_transpile_layout_num_output_qubits(layout.ptr)), isempty(perm) ? 0 : maximum(perm)) :
+        Int(num_physical_qubits)
+    return apply_layout_to_hamiltonian(h, perm; num_physical_qubits = n_phys)
+end
+
+function apply_layout_to_hamiltonian(
+    h::IsingHamiltonian,
     layout_perm::AbstractVector{<:Integer};
     num_physical_qubits::Integer = max(h.num_qubits, isempty(layout_perm) ? 0 : maximum(layout_perm)),
 )::IsingHamiltonian

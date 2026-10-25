@@ -2,11 +2,11 @@ module QAOA
 
 using Qiskit
 using QiskitIBMRuntime
-using PythonCall: Py, PyException, pybuiltins, pyconvert, pyhasattr, pyis, pylist, pydict, pyint, pylen, pystr, @pyexec
 using ..QiskitOpt:
     AerBackendConfig,
     IsingHamiltonian,
     NativeAnsatz,
+    NativeFakeBackend,
     NativeLocalBackend,
     NativeOptimizerResult,
     NativePassManager,
@@ -14,7 +14,18 @@ using ..QiskitOpt:
     NativeRuntimeJob,
     PauliTerm,
     _TWO_QUBIT_GATE_NAMES,
+    _is_py,
     _module_version,
+    _py_exception_type_hook,
+    _py_float,
+    _py_hasattr,
+    _py_int,
+    _py_int_arg,
+    _py_int_vec,
+    _py_is_none,
+    _py_len,
+    _py_list_arg,
+    _py_str,
     apply_layout_to_hamiltonian,
     backend_name,
     backend_version,
@@ -29,6 +40,7 @@ using ..QiskitOpt:
     effective_seed,
     empty_metadata,
     estimate_expectation,
+    evaluate_ising_bitstring,
     has_measurement_operations,
     iqm_backend,
     iqm_qiskit,
@@ -364,7 +376,7 @@ function _circuit_operation_counts(circuit)
     operations = Dict{String,Int}()
     counts = circuit.count_ops()
     for key in counts.keys()
-        operations[pyconvert(String, key)] = pyconvert(Int, counts[key])
+        operations[_py_str(key)] = _py_int(counts[key])
     end
     return operations
 end
@@ -381,8 +393,8 @@ function _python_qualified_type(object)
     end
     try
         class_object = getproperty(object, :__class__)
-        module_name = pyconvert(String, getproperty(class_object, :__module__))
-        class_name = pyconvert(String, getproperty(class_object, :__name__))
+        module_name = _py_str(getproperty(class_object, :__module__))
+        class_name = _py_str(getproperty(class_object, :__name__))
         return "$(module_name).$(class_name)"
     catch
         return string(typeof(object))
@@ -391,7 +403,7 @@ end
 
 function _python_len_or_nothing(object)
     try
-        return Int(pylen(object))
+        return Int(_py_len(object))
     catch
         return nothing
     end
@@ -401,7 +413,7 @@ function _python_string_vector(object)
     values = String[]
     try
         for item in object
-            push!(values, pyconvert(String, pystr(item)))
+            push!(values, _py_str(item))
         end
     catch
         return String[]
@@ -411,7 +423,7 @@ end
 
 function _python_object_summary(object; limit::Integer = 600)
     try
-        text = pyconvert(String, pystr(object))
+        text = _py_str(object)
         length(text) <= limit && return text
         return text[begin:nextind(text, 0, limit)] * "..."
     catch
@@ -425,7 +437,7 @@ function _circuit_int_call(circuit, name::Symbol)
         name === :size && return circuit_size(circuit)
     end
     try
-        return pyconvert(Int, getproperty(circuit, name)())
+        return _py_int(getproperty(circuit, name)())
     catch
         return nothing
     end
@@ -436,7 +448,7 @@ function _instruction_operation_name(instruction)
         return instruction.name
     end
     try
-        return pyconvert(String, pystr(getproperty(getproperty(instruction, :operation), :name)))
+        return _py_str(getproperty(getproperty(instruction, :operation), :name))
     catch
         return nothing
     end
@@ -531,8 +543,8 @@ end
 function _circuit_resource_metadata(circuit)
     two_qubit_counts = _two_qubit_operation_counts(circuit)
     return Dict{String,Any}(
-        "num_qubits" => pyconvert(Int, circuit.num_qubits),
-        "num_clbits" => pyconvert(Int, circuit.num_clbits),
+        "num_qubits" => _py_int(circuit.num_qubits),
+        "num_clbits" => _py_int(circuit.num_clbits),
         "depth" => _circuit_int_call(circuit, :depth),
         "size" => _circuit_int_call(circuit, :size),
         "operations" => _circuit_operation_counts(circuit),
@@ -648,9 +660,9 @@ function _fixed_parameter_metadata(
 )
     n, _, _, α, β = QUBOTools.qubo(sampler, :dense)
     sense = MOI.get(sampler, MOI.ObjectiveSense())
-    n_qubits = circuit isa Qiskit.QuantumCircuit ? circuit.num_qubits : pyconvert(Int, circuit.num_qubits)
-    n_clbits = circuit isa Qiskit.QuantumCircuit ? circuit.num_clbits : pyconvert(Int, circuit.num_clbits)
-    depth_val = circuit isa Qiskit.QuantumCircuit ? circuit_depth(circuit) : pyconvert(Int, circuit.depth())
+    n_qubits = circuit isa Qiskit.QuantumCircuit ? circuit.num_qubits : _py_int(circuit.num_qubits)
+    n_clbits = circuit isa Qiskit.QuantumCircuit ? circuit.num_clbits : _py_int(circuit.num_clbits)
+    depth_val = circuit isa Qiskit.QuantumCircuit ? circuit_depth(circuit) : _py_int(circuit.depth())
 
     return Dict{String,Any}(
         "algorithm" => Dict{String,Any}(
@@ -737,7 +749,7 @@ end
 
 function _check_measured_circuit(circuit)
     try
-        pyconvert(Int, circuit.num_clbits) >= 1 && return nothing
+        _py_int(circuit.num_clbits) >= 1 && return nothing
     catch err
         err isa ArgumentError && rethrow()
         throw(ArgumentError("circuit must expose Qiskit num_clbits"))
@@ -774,7 +786,7 @@ end
 function _python_package_version(lazy_module)
     try
         loaded = lazy_module()
-        return pyconvert(String, loaded.__version__)
+        return _py_str(loaded.__version__)
     catch
         return nothing
     end
@@ -864,7 +876,7 @@ function _python_call_string(object, name::Symbol)
         end
         value isa AbstractString && return String(value)
         value === nothing && return nothing
-        return pyconvert(String, pystr(value))
+        return _py_str(value)
     catch
         return nothing
     end
@@ -896,7 +908,8 @@ function _resource_audit_package_versions()
 end
 
 function _resource_audit_exception_type(err)
-    err isa PyException && return _python_qualified_type(err.v)
+    py_type = _py_exception_type_hook[](err)
+    !isnothing(py_type) && return py_type
     return string(nameof(typeof(err)))
 end
 
@@ -1267,13 +1280,13 @@ function ibm_runtime_handoff(
             runtime_backend.submit_sampler(exec_qc, shot_count)
         elseif runtime_backend isa QiskitIBMRuntime.Backend && service isa QiskitIBMRuntime.Service
             NativeRuntimeJob(service, QiskitIBMRuntime.run_sampler_job(service, runtime_backend, exec_qc, shot_count))
-        elseif !(runtime_backend isa Py) && hasproperty(runtime_backend, :submit_sampler)
+        elseif !_is_py(runtime_backend) && hasproperty(runtime_backend, :submit_sampler)
             runtime_backend.submit_sampler(exec_qc, shot_count)
-        elseif !(runtime_backend isa Py) && hasproperty(runtime_backend, :run)
+        elseif !_is_py(runtime_backend) && hasproperty(runtime_backend, :run)
             runtime_backend.run(exec_qc; shots=shot_count)
         else
             sampler = qiskit_ibm_runtime().SamplerV2(mode=runtime_backend)
-            sampler.run(pylist([exec_qc]), shots=pyint(shot_count))
+            sampler.run(_py_list_arg([exec_qc]), shots=_py_int_arg(shot_count))
         end
     catch err
         handoff = metadata["runtime_handoff"]
@@ -1438,7 +1451,7 @@ function extract_layout_permutation(
         Int(req_var)
     else
         try
-            pyconvert(Int, circuit.num_clbits)
+            _py_int(circuit.num_clbits)
         catch
             0
         end
@@ -1451,10 +1464,10 @@ function extract_layout_permutation(
             _instruction_operation_name(instruction) == "measure" || continue
             qubits = getproperty(instruction, :qubits)
             clbits = getproperty(instruction, :clbits)
-            m = min(Int(pylen(qubits)), Int(pylen(clbits)))
+            m = min(Int(_py_len(qubits)), Int(_py_len(clbits)))
             for idx in 0:(m - 1)
-                q_idx = pyconvert(Int, circuit.find_bit(qubits[idx]).index)
-                c_idx = pyconvert(Int, circuit.find_bit(clbits[idx]).index)
+                q_idx = _py_int(circuit.find_bit(qubits[idx]).index)
+                c_idx = _py_int(circuit.find_bit(clbits[idx]).index)
                 phys_to_clbit[q_idx] = c_idx
             end
         end
@@ -1463,7 +1476,7 @@ function extract_layout_permutation(
 
     virt_to_phys = nothing
     try
-        if !(circuit isa Py) && hasproperty(circuit, :layout)
+        if !_is_py(circuit) && hasproperty(circuit, :layout)
             layout = getproperty(circuit, :layout)
             if layout isa Qiskit.TranspileLayout
                 p1 = transpile_layout_final_permutation(layout)
@@ -1473,10 +1486,10 @@ function extract_layout_permutation(
                 raw = fl isa Function ? fl() : fl
                 virt_to_phys = Int[Int(x) for x in raw]
             end
-        elseif pyhasattr(circuit, "layout")
+        elseif _py_hasattr(circuit, "layout")
             layout = getproperty(circuit, :layout)
-            if !pyis(layout, pybuiltins.None) && pyhasattr(layout, "final_index_layout")
-                virt_to_phys = pyconvert(Vector{Int}, layout.final_index_layout())
+            if !_py_is_none(layout) && _py_hasattr(layout, "final_index_layout")
+                virt_to_phys = _py_int_vec(layout.final_index_layout())
             end
         end
     catch
@@ -1552,7 +1565,7 @@ function transpile_for_execution(
         target
     elseif backend isa Qiskit.Target
         backend
-    elseif !isnothing(backend) && !(backend isa Py) && hasproperty(backend, :target) && getproperty(backend, :target) isa Qiskit.Target
+    elseif !isnothing(backend) && !_is_py(backend) && hasproperty(backend, :target) && getproperty(backend, :target) isa Qiskit.Target
         getproperty(backend, :target)
     else
         default_local_target(circuit.num_qubits)
@@ -1613,8 +1626,8 @@ function _normalize_counts_dict(counts)
 
     try
         for key in counts.keys()
-            key_str = pyconvert(String, pystr(key))
-            reads = pyconvert(Int, counts[key])
+            key_str = _py_str(key)
+            reads = _py_int(counts[key])
             reads < 0 && throw(ArgumentError("count multiplicity for key $(repr(key_str)) must be non-negative"))
             reads == 0 && continue
             push!(normalized, key_str => reads)
@@ -1883,8 +1896,8 @@ function backend_run_executor(circuit, backend; shots::Integer = 1024)
     shot_count = _check_runtime_shots(shots)
     exec_circuit = circuit isa Qiskit.TranspileResult ? circuit.circuit : circuit
     run_fn = getproperty(backend, :run)
-    job = if backend isa Py
-        run_fn(exec_circuit; shots=pyint(shot_count))
+    job = if _is_py(backend)
+        run_fn(exec_circuit; shots=_py_int_arg(shot_count))
     else
         try
             run_fn(exec_circuit; shots=shot_count)
@@ -1912,8 +1925,8 @@ function _run_circuit_with_hook(circuit, backend; shots::Integer, executor = not
         return (job=job, counts=counts, execution_path="custom_executor")
     end
 
-    has_run = if backend isa Py
-        pyhasattr(backend, "run")
+    has_run = if _is_py(backend)
+        _py_hasattr(backend, "run")
     else
         hasproperty(backend, :run)
     end
@@ -1923,7 +1936,7 @@ function _run_circuit_with_hook(circuit, backend; shots::Integer, executor = not
     end
 
     qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-    job = qiskit_sampler.run(pylist([exec_circuit]), shots=pyint(shot_count))
+    job = qiskit_sampler.run(_py_list_arg([exec_circuit]), shots=_py_int_arg(shot_count))
     counts = job.result()[0].data.meas.get_counts()
     return (job=job, counts=counts, execution_path="ibm_runtime_sampler_v2")
 end
@@ -1958,7 +1971,7 @@ function _transpile_with_fallback(
     end
 
     # If `backend` is a lightweight Julia mock backend without Qiskit Target, skip Qiskit preset transpilation
-    if !(backend isa Py) && !hasproperty(backend, :target)
+    if !_is_py(backend) && !hasproperty(backend, :target)
         return (
             circuit = circuit,
             source = "untranspiled_mock_backend",
@@ -2617,6 +2630,23 @@ function retrieve(
         eval_counter[] += 1
         bound_qc = bind_ansatz_parameters(ansatz_isa, params)
         eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
+        if !(backend isa NativeLocalBackend || backend isa NativeFakeBackend) && ising_hamiltonian.num_qubits > 0
+            meas_qc = copy(bound_qc)
+            measure_all!(meas_qc)
+            raw_counts = _run_circuit_with_hook(
+                meas_qc,
+                backend;
+                shots = num_reads,
+                executor = circuit_executor,
+            ).counts
+            val = 0.0
+            total_r = 0
+            for (state, reads) in _decode_counts_entries(raw_counts, isa_hamiltonian.num_qubits)
+                val += reads * evaluate_ising_bitstring(isa_hamiltonian, state)
+                total_r += reads
+            end
+            return total_r > 0 ? val / total_r : 0.0
+        end
         return estimate_expectation(
             bound_qc,
             isa_hamiltonian;

@@ -5,6 +5,7 @@ using ..QiskitOpt:
     AerBackendConfig,
     IsingHamiltonian,
     NativeAnsatz,
+    NativeFakeBackend,
     NativeLocalBackend,
     apply_layout_to_hamiltonian,
     backend_name,
@@ -16,6 +17,7 @@ using ..QiskitOpt:
     efficient_su2_ansatz,
     empty_metadata,
     estimate_expectation,
+    evaluate_ising_bitstring,
     measure_all!,
     minimize_objective,
     preset_pass_manager,
@@ -251,6 +253,22 @@ function retrieve(
         eval_counter[] += 1
         bound_qc = bind_ansatz_parameters(ansatz_isa, params)
         eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
+        if !(backend isa NativeLocalBackend || backend isa NativeFakeBackend) && ising_hamiltonian.num_qubits > 0
+            meas_qc = copy(bound_qc)
+            measure_all!(meas_qc)
+            raw_counts = _run_circuit_with_hook(
+                meas_qc,
+                backend;
+                shots = num_reads,
+            ).counts
+            val = 0.0
+            total_r = 0
+            for (state, reads) in _decode_counts_entries(raw_counts, isa_hamiltonian.num_qubits)
+                val += reads * evaluate_ising_bitstring(isa_hamiltonian, state)
+                total_r += reads
+            end
+            return total_r > 0 ? val / total_r : 0.0
+        end
         return estimate_expectation(
             bound_qc,
             isa_hamiltonian;
