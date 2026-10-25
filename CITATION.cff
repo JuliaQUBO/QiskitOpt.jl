@@ -22,7 +22,7 @@ abstract: >-
   variational quantum algorithms (QAOA and VQE).
 repository-code: "https://github.com/JuliaQUBO/QiskitOpt.jl"
 license: MIT
-version: "0.7.2"
+version: "0.8.0"
 date-released: 2026-10-25
 doi: "10.5281/zenodo.7535883"
 keywords:
