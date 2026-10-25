@@ -1,35 +1,82 @@
 module QAOA
 
-using PythonCall: Py, PyException, pybuiltins, pyconvert, pyhasattr, pyis, pylist, pydict, pyint, pylen, pystr, @pyexec
+using Qiskit
+using QiskitIBMRuntime
 using ..QiskitOpt:
     AerBackendConfig,
+    IsingHamiltonian,
+    NativeAnsatz,
+    NativeFakeBackend,
+    NativeLocalBackend,
+    NativeOptimizerResult,
+    NativePassManager,
+    NativeRuntimeBackend,
+    NativeRuntimeJob,
+    PauliTerm,
+    _TWO_QUBIT_GATE_NAMES,
+    _is_py,
+    _module_version,
+    _py_exception_type_hook,
+    _py_float,
+    _py_hasattr,
+    _py_int,
+    _py_int_arg,
+    _py_int_vec,
+    _py_is_none,
+    _py_len,
+    _py_list_arg,
+    _py_str,
+    apply_layout_to_hamiltonian,
     backend_name,
     backend_version,
+    bind_ansatz_parameters,
+    bitvectors_to_counts,
+    build_qaoa_circuit,
+    circuit_depth,
+    circuit_size,
     configured_execution_backend,
     default_local_backend,
+    default_local_target,
     effective_seed,
     empty_metadata,
+    estimate_expectation,
+    evaluate_ising_bitstring,
+    has_measurement_operations,
     iqm_backend,
     iqm_qiskit,
     iqm_server_url,
     iqm_token,
     iqm_tokens_file,
+    measure_all,
+    measure_all!,
+    minimize_objective,
+    native_transpile,
+    operation_counts_dict,
+    parse_sparse_observable,
     preset_pass_manager,
     python_int_property,
+    qaoa_ansatz,
     qiskit_parameter_names,
     qiskit,
     qiskit_ibm_runtime,
     quadratic_program,
+    qubo_to_ising,
     random_unit_values,
+    remove_final_measurements,
     runtime_channel,
     runtime_service,
     runtime_instance,
     runtime_token,
     sample_bits,
+    sample_bitvectors_from_circuit,
+    sample_from_circuit,
     scipy,
     numpy,
     optimizer_result_metadata,
     python_float_vector,
+    to_sparse_observable,
+    transpile_layout_final_permutation,
+    two_qubit_gate_count,
     validate_initial_parameters
 
 using QUBO
@@ -230,8 +277,11 @@ function parameter_names(n_variables::Integer; number_of_layers::Integer)
 end
 
 function parameter_names(sampler::QUBODrivers.AbstractSampler; number_of_layers::Integer = MOI.get(sampler, QAOA.NumberOfLayers()))
-    ising_hamiltonian = quadratic_program(sampler)[0]
-    return parameter_names(ising_hamiltonian; number_of_layers=number_of_layers)
+    return _parameter_names(number_of_layers)
+end
+
+function parameter_names(cost_operator::Union{IsingHamiltonian,Qiskit.SparseObservable}; number_of_layers::Integer)
+    return _parameter_names(number_of_layers)
 end
 
 function parameter_names(cost_operator; number_of_layers::Integer)
@@ -319,20 +369,32 @@ function _qiskit_minimization_sign(sense)
     return sense == MOI.MIN_SENSE ? 1 : -1
 end
 
+_circuit_operation_counts(circuit::Qiskit.QuantumCircuit) = operation_counts_dict(circuit)
+_circuit_operation_counts(res::Qiskit.TranspileResult) = operation_counts_dict(res.circuit)
+
 function _circuit_operation_counts(circuit)
     operations = Dict{String,Int}()
     counts = circuit.count_ops()
     for key in counts.keys()
-        operations[pyconvert(String, key)] = pyconvert(Int, counts[key])
+        operations[_py_str(key)] = _py_int(counts[key])
     end
     return operations
 end
 
 function _python_qualified_type(object)
+    if object isa Qiskit.QuantumCircuit
+        return "Qiskit.QuantumCircuit"
+    elseif object isa Qiskit.TranspileResult
+        return "Qiskit.TranspileResult"
+    elseif object isa Qiskit.TranspileLayout
+        return "Qiskit.TranspileLayout"
+    elseif object isa Qiskit.Target
+        return "Qiskit.Target"
+    end
     try
         class_object = getproperty(object, :__class__)
-        module_name = pyconvert(String, getproperty(class_object, :__module__))
-        class_name = pyconvert(String, getproperty(class_object, :__name__))
+        module_name = _py_str(getproperty(class_object, :__module__))
+        class_name = _py_str(getproperty(class_object, :__name__))
         return "$(module_name).$(class_name)"
     catch
         return string(typeof(object))
@@ -341,7 +403,7 @@ end
 
 function _python_len_or_nothing(object)
     try
-        return Int(pylen(object))
+        return Int(_py_len(object))
     catch
         return nothing
     end
@@ -351,7 +413,7 @@ function _python_string_vector(object)
     values = String[]
     try
         for item in object
-            push!(values, pyconvert(String, pystr(item)))
+            push!(values, _py_str(item))
         end
     catch
         return String[]
@@ -361,7 +423,7 @@ end
 
 function _python_object_summary(object; limit::Integer = 600)
     try
-        text = pyconvert(String, pystr(object))
+        text = _py_str(object)
         length(text) <= limit && return text
         return text[begin:nextind(text, 0, limit)] * "..."
     catch
@@ -370,27 +432,53 @@ function _python_object_summary(object; limit::Integer = 600)
 end
 
 function _circuit_int_call(circuit, name::Symbol)
+    if circuit isa Qiskit.QuantumCircuit || circuit isa Qiskit.TranspileResult
+        name === :depth && return circuit_depth(circuit)
+        name === :size && return circuit_size(circuit)
+    end
     try
-        return pyconvert(Int, getproperty(circuit, name)())
+        return _py_int(getproperty(circuit, name)())
     catch
         return nothing
     end
 end
 
 function _instruction_operation_name(instruction)
+    if instruction isa Qiskit.CircuitInstruction
+        return instruction.name
+    end
     try
-        return pyconvert(String, pystr(getproperty(getproperty(instruction, :operation), :name)))
+        return _py_str(getproperty(getproperty(instruction, :operation), :name))
     catch
         return nothing
     end
 end
 
 function _instruction_width(instruction, field::Symbol)
+    if instruction isa Qiskit.CircuitInstruction
+        field === :qubits && return length(instruction.qubits)
+        field === :clbits && return length(instruction.clbits)
+    end
     try
         return _python_len_or_nothing(getproperty(instruction, field))
     catch
         return nothing
     end
+end
+
+function _two_qubit_operation_counts(res::Qiskit.TranspileResult)
+    return _two_qubit_operation_counts(res.circuit)
+end
+
+function _two_qubit_operation_counts(circuit::Qiskit.QuantumCircuit)
+    counts = Dict{String,Int}()
+    for instruction in circuit.data
+        length(instruction.qubits) == 2 || continue
+        name = instruction.name
+        name in ("barrier", "delay") && continue
+        counts[name] = get(counts, name, 0) + 1
+    end
+    return counts
 end
 
 function _two_qubit_operation_counts(circuit)
@@ -409,6 +497,17 @@ function _two_qubit_operation_counts(circuit)
     return counts
 end
 
+_measured_bit_count(res::Qiskit.TranspileResult) = _measured_bit_count(res.circuit)
+
+function _measured_bit_count(circuit::Qiskit.QuantumCircuit)
+    measured = 0
+    for instruction in circuit.data
+        instruction.name == "measure" || continue
+        measured += length(instruction.clbits)
+    end
+    return measured
+end
+
 function _measured_bit_count(circuit)
     measured = 0
     try
@@ -423,17 +522,43 @@ function _measured_bit_count(circuit)
     return measured
 end
 
+function _circuit_resource_metadata(res::Qiskit.TranspileResult)
+    return _circuit_resource_metadata(res.circuit)
+end
+
+function _circuit_resource_metadata(circuit::Qiskit.QuantumCircuit)
+    two_qubit_counts = _two_qubit_operation_counts(circuit)
+    return Dict{String,Any}(
+        "num_qubits" => circuit.num_qubits,
+        "num_clbits" => circuit.num_clbits,
+        "depth" => circuit_depth(circuit),
+        "size" => circuit_size(circuit),
+        "operations" => operation_counts_dict(circuit),
+        "two_qubit_operation_counts" => two_qubit_counts,
+        "two_qubit_operation_count" => sum(values(two_qubit_counts); init=0),
+        "measured_bit_count" => _measured_bit_count(circuit),
+    )
+end
+
 function _circuit_resource_metadata(circuit)
     two_qubit_counts = _two_qubit_operation_counts(circuit)
     return Dict{String,Any}(
-        "num_qubits" => pyconvert(Int, circuit.num_qubits),
-        "num_clbits" => pyconvert(Int, circuit.num_clbits),
+        "num_qubits" => _py_int(circuit.num_qubits),
+        "num_clbits" => _py_int(circuit.num_clbits),
         "depth" => _circuit_int_call(circuit, :depth),
         "size" => _circuit_int_call(circuit, :size),
         "operations" => _circuit_operation_counts(circuit),
         "two_qubit_operation_counts" => two_qubit_counts,
         "two_qubit_operation_count" => sum(values(two_qubit_counts); init=0),
         "measured_bit_count" => _measured_bit_count(circuit),
+    )
+end
+
+function _target_resource_metadata(target::Qiskit.Target)
+    return Dict{String,Any}(
+        "type" => "Qiskit.Target",
+        "num_qubits" => Int(target.num_qubits),
+        "num_instructions" => Int(target.num_instructions),
     )
 end
 
@@ -461,6 +586,16 @@ function _target_resource_metadata(target)
 end
 
 function _backend_resource_metadata(backend, source::AbstractString)
+    if backend isa Qiskit.Target
+        return Dict{String,Any}(
+            "source" => String(source),
+            "type" => "Qiskit.Target",
+            "name" => "qiskit_target",
+            "version" => nothing,
+            "num_qubits" => Int(backend.num_qubits),
+            "target" => _target_resource_metadata(backend),
+        )
+    end
     metadata = Dict{String,Any}(
         "source" => String(source),
         "type" => _python_qualified_type(backend),
@@ -480,6 +615,20 @@ function _backend_resource_metadata(backend, source::AbstractString)
     end
 
     return metadata
+end
+
+function _transpiled_layout_metadata(res::Qiskit.TranspileResult)
+    perm = transpile_layout_final_permutation(res.layout)
+    return Dict{String,Any}(
+        "available" => true,
+        "type" => "Qiskit.TranspileLayout",
+        "summary" => sprint(show, res.layout),
+        "final_layout" => string(perm),
+    )
+end
+
+function _transpiled_layout_metadata(circuit::Qiskit.QuantumCircuit)
+    return Dict{String,Any}("available" => false)
 end
 
 function _transpiled_layout_metadata(circuit)
@@ -511,6 +660,9 @@ function _fixed_parameter_metadata(
 )
     n, _, _, α, β = QUBOTools.qubo(sampler, :dense)
     sense = MOI.get(sampler, MOI.ObjectiveSense())
+    n_qubits = circuit isa Qiskit.QuantumCircuit ? circuit.num_qubits : _py_int(circuit.num_qubits)
+    n_clbits = circuit isa Qiskit.QuantumCircuit ? circuit.num_clbits : _py_int(circuit.num_clbits)
+    depth_val = circuit isa Qiskit.QuantumCircuit ? circuit_depth(circuit) : _py_int(circuit.depth())
 
     return Dict{String,Any}(
         "algorithm" => Dict{String,Any}(
@@ -549,9 +701,9 @@ function _fixed_parameter_metadata(
             "value_convention" => "QUBOTools.value(bits, linear, quadratic, scale, offset)",
         ),
         "circuit" => Dict{String,Any}(
-            "num_qubits" => pyconvert(Int, circuit.num_qubits),
-            "num_clbits" => pyconvert(Int, circuit.num_clbits),
-            "depth" => pyconvert(Int, circuit.depth()),
+            "num_qubits" => n_qubits,
+            "num_clbits" => n_clbits,
+            "depth" => depth_val,
             "operations" => _circuit_operation_counts(circuit),
         ),
     )
@@ -579,9 +731,25 @@ function _check_transpiler_seed(seed::Union{Integer,Nothing})
     return Int(seed)
 end
 
+function _check_measured_circuit(circuit::Qiskit.QuantumCircuit)
+    if circuit.num_clbits >= 1 && has_measurement_operations(circuit)
+        return nothing
+    end
+    throw(
+        ArgumentError(
+            "ibm_runtime_handoff expects a measured circuit; call " *
+            "QAOA.fixed_parameter_circuit(...; measure=true)",
+        ),
+    )
+end
+
+function _check_measured_circuit(res::Qiskit.TranspileResult)
+    return _check_measured_circuit(res.circuit)
+end
+
 function _check_measured_circuit(circuit)
     try
-        pyconvert(Int, circuit.num_clbits) >= 1 && return nothing
+        _py_int(circuit.num_clbits) >= 1 && return nothing
     catch err
         err isa ArgumentError && rethrow()
         throw(ArgumentError("circuit must expose Qiskit num_clbits"))
@@ -618,7 +786,7 @@ end
 function _python_package_version(lazy_module)
     try
         loaded = lazy_module()
-        return pyconvert(String, loaded.__version__)
+        return _py_str(loaded.__version__)
     catch
         return nothing
     end
@@ -627,8 +795,8 @@ end
 function _runtime_handoff_package_versions()
     return Dict{String,Any}(
         "QiskitOpt" => _julia_package_version(),
-        "qiskit" => _python_package_version(qiskit),
-        "qiskit_ibm_runtime" => _python_package_version(qiskit_ibm_runtime),
+        "qiskit" => something(_module_version(Qiskit), "0.6.0"),
+        "qiskit_ibm_runtime" => something(_module_version(QiskitIBMRuntime), "0.3.0"),
     )
 end
 
@@ -673,6 +841,16 @@ function _runtime_handoff_metadata(;
 end
 
 function _transpile_for_runtime(circuit, backend; optimization_level::Integer, transpiler_seed)
+    if circuit isa Qiskit.QuantumCircuit
+        pm = preset_pass_manager(
+            backend;
+            optimization_level=optimization_level,
+            seed_transpiler=transpiler_seed,
+        )
+        res = pm.run(circuit)
+        return res isa Qiskit.TranspileResult ? res.circuit : res
+    end
+
     if isnothing(transpiler_seed)
         return qiskit().transpile(
             circuit;
@@ -696,7 +874,9 @@ function _python_call_string(object, name::Symbol)
             value = value()
         catch
         end
-        return pyconvert(String, pystr(value))
+        value isa AbstractString && return String(value)
+        value === nothing && return nothing
+        return _py_str(value)
     catch
         return nothing
     end
@@ -723,12 +903,13 @@ end
 function _resource_audit_package_versions()
     return Dict{String,Any}(
         "QiskitOpt" => _julia_package_version(),
-        "qiskit" => _python_package_version(qiskit),
+        "qiskit" => something(_module_version(Qiskit), "0.6.0"),
     )
 end
 
 function _resource_audit_exception_type(err)
-    err isa PyException && return _python_qualified_type(err.v)
+    py_type = _py_exception_type_hook[](err)
+    !isnothing(py_type) && return py_type
     return string(nameof(typeof(err)))
 end
 
@@ -836,6 +1017,73 @@ specific target. Set `transpile=false` to record only the untranspiled circuit
 metadata.
 """
 function resource_audit(
+    n::Integer,
+    L::AbstractDict,
+    Q::AbstractDict;
+    p::Union{Integer,Nothing} = nothing,
+    reps::Union{Integer,Nothing} = nothing,
+    number_of_layers::Union{Integer,Nothing} = nothing,
+    gamma::Union{AbstractVector{<:Real},Nothing} = nothing,
+    beta::Union{AbstractVector{<:Real},Nothing} = nothing,
+    parameters::Union{AbstractVector{<:Real},Nothing} = nothing,
+    parameter_order::Symbol = :beta_then_gamma,
+    sense::MOI.OptimizationSense = MOI.MIN_SENSE,
+    measure::Bool = false,
+    target::Union{Nothing,Qiskit.Target} = nothing,
+    backend = nothing,
+    pass_manager = nothing,
+    pass_manager_factory = nothing,
+    optimization_level::Integer = 3,
+    transpiler_seed::Union{Integer,Nothing} = 73001,
+)
+    layers = if !isnothing(p)
+        _check_number_of_layers(p)
+    elseif !isnothing(reps)
+        _check_number_of_layers(reps)
+    elseif !isnothing(number_of_layers)
+        _check_number_of_layers(number_of_layers)
+    else
+        !isnothing(gamma) ? _check_number_of_layers(length(gamma)) : 1
+    end
+    qc = fixed_parameter_circuit(
+        n,
+        L,
+        Q;
+        p = layers,
+        gamma = gamma,
+        beta = beta,
+        parameters = parameters,
+        parameter_order = parameter_order,
+        sense = sense,
+        measure = measure,
+    )
+    transpiled = transpile_for_execution(
+        qc;
+        target = target,
+        backend = backend,
+        pass_manager = pass_manager,
+        pass_manager_factory = pass_manager_factory,
+        optimization_level = optimization_level,
+        transpiler_seed = transpiler_seed,
+    )
+    t_qc = transpiled isa Qiskit.TranspileResult ? transpiled.circuit : transpiled
+    ops = operation_counts_dict(transpiled)
+    perm = extract_layout_permutation(transpiled; num_qubits = Int(n))
+    return (
+        num_qubits = t_qc.num_qubits,
+        reps = layers,
+        depth = circuit_depth(transpiled),
+        size = circuit_size(transpiled),
+        op_counts = ops,
+        two_qubit_gates = two_qubit_gate_count(ops),
+        parameter_count = 2 * layers,
+        layout_permutation = perm,
+        transpiled_circuit = t_qc,
+        transpile_result = transpiled,
+    )
+end
+
+function resource_audit(
     source::MOI.ModelLike;
     parameters,
     reps = nothing,
@@ -894,12 +1142,22 @@ function resource_audit(
 
     transpiled_circuit = nothing
     try
-        pass_manager_selection = _selected_pass_manager(
-            backend_selection.backend;
-            factory=pass_manager_factory,
-            optimization_level=checked_optimization_level,
-            seed_transpiler=checked_seed,
-        )
+        pass_manager_selection = if circuit isa Qiskit.QuantumCircuit && isnothing(pass_manager_factory) &&
+            (backend_selection.backend === nothing || backend_selection.backend isa Qiskit.Target || backend_selection.source == "default_local_backend")
+            t_arg = backend_selection.backend isa Qiskit.Target ? backend_selection.backend : nothing
+            (
+                pass_manager = NativePassManager(t_arg, checked_optimization_level, checked_seed),
+                source = "default_preset",
+                optimization_level = checked_optimization_level,
+            )
+        else
+            _selected_pass_manager(
+                backend_selection.backend;
+                factory=pass_manager_factory,
+                optimization_level=checked_optimization_level,
+                seed_transpiler=checked_seed,
+            )
+        end
         _record_resource_audit_pass_manager!(metadata, pass_manager_selection)
         transpiled_circuit = pass_manager_selection.pass_manager.run(circuit)
         _mark_resource_audit_success!(
@@ -1017,8 +1275,19 @@ function ibm_runtime_handoff(
             optimization_level=checked_optimization_level,
             transpiler_seed=checked_seed,
         )
-        sampler = qiskit_ibm_runtime().SamplerV2(mode=runtime_backend)
-        job = sampler.run(pylist([transpiled_circuit]), shots=pyint(shot_count))
+        exec_qc = transpiled_circuit isa Qiskit.TranspileResult ? transpiled_circuit.circuit : transpiled_circuit
+        job = if runtime_backend isa NativeRuntimeBackend
+            runtime_backend.submit_sampler(exec_qc, shot_count)
+        elseif runtime_backend isa QiskitIBMRuntime.Backend && service isa QiskitIBMRuntime.Service
+            NativeRuntimeJob(service, QiskitIBMRuntime.run_sampler_job(service, runtime_backend, exec_qc, shot_count))
+        elseif !_is_py(runtime_backend) && hasproperty(runtime_backend, :submit_sampler)
+            runtime_backend.submit_sampler(exec_qc, shot_count)
+        elseif !_is_py(runtime_backend) && hasproperty(runtime_backend, :run)
+            runtime_backend.run(exec_qc; shots=shot_count)
+        else
+            sampler = qiskit_ibm_runtime().SamplerV2(mode=runtime_backend)
+            sampler.run(_py_list_arg([exec_qc]), shots=_py_int_arg(shot_count))
+        end
     catch err
         handoff = metadata["runtime_handoff"]
         handoff["status"] = "failed_before_submission"
@@ -1081,12 +1350,111 @@ Combines `circuit.layout.final_index_layout()` (virtual qubit -> physical qubit)
 with the circuit's `measure` instructions (physical qubit -> classical bit).
 Falls back to `collect(1:n)` when no layout or measurement remapping is present.
 """
-function extract_layout_permutation(circuit; num_variables::Union{Integer,Nothing} = nothing)
-    n = if !isnothing(num_variables)
+function extract_layout_permutation(
+    layout::Qiskit.TranspileLayout;
+    num_variables::Union{Integer,Nothing} = nothing,
+    num_qubits::Union{Integer,Nothing} = nothing,
+)
+    raw_perm = transpile_layout_final_permutation(layout)
+    req_n = !isnothing(num_variables) ? Int(num_variables) : (!isnothing(num_qubits) ? Int(num_qubits) : length(raw_perm))
+    req_n <= 0 && return Int[]
+    if length(raw_perm) >= req_n
+        sub = raw_perm[1:req_n]
+        if length(unique(sub)) == req_n && all(q -> 1 <= q <= req_n, sub)
+            return sub
+        end
+    end
+    return collect(1:req_n)
+end
+
+function extract_layout_permutation(
+    res::Qiskit.TranspileResult;
+    num_variables::Union{Integer,Nothing} = nothing,
+    num_qubits::Union{Integer,Nothing} = nothing,
+)
+    phys_perm = transpile_layout_final_permutation(res.layout)
+    qc = res.circuit
+    req_n = if !isnothing(num_variables)
         Int(num_variables)
+    elseif !isnothing(num_qubits)
+        Int(num_qubits)
+    elseif !isempty(phys_perm)
+        length(phys_perm)
+    else
+        qc.num_clbits > 0 ? qc.num_clbits : qc.num_qubits
+    end
+    req_n <= 0 && return Int[]
+
+    phys_to_clbit = Dict{Int,Int}()
+    offset = qc.offset
+    for inst in qc.data
+        inst.name == "measure" || continue
+        for (q_raw, c_raw) in zip(inst.qubits, inst.clbits)
+            phys_to_clbit[q_raw - offset + 1] = c_raw - offset + 1
+        end
+    end
+
+    if isempty(phys_to_clbit)
+        if length(phys_perm) >= req_n
+            sub = phys_perm[1:req_n]
+            if length(unique(sub)) == req_n && all(q -> 1 <= q <= req_n, sub)
+                return sub
+            end
+        end
+        return collect(1:req_n)
+    end
+
+    perm = Vector{Int}(undef, req_n)
+    for i in 1:req_n
+        phys_q = i <= length(phys_perm) ? phys_perm[i] : i
+        perm[i] = get(phys_to_clbit, phys_q, i)
+    end
+    if length(unique(perm)) != req_n || any(c -> c < 1 || c > req_n, perm)
+        return collect(1:req_n)
+    end
+    return perm
+end
+
+function extract_layout_permutation(
+    qc::Qiskit.QuantumCircuit;
+    num_variables::Union{Integer,Nothing} = nothing,
+    num_qubits::Union{Integer,Nothing} = nothing,
+)
+    req_n = if !isnothing(num_variables)
+        Int(num_variables)
+    elseif !isnothing(num_qubits)
+        Int(num_qubits)
+    else
+        qc.num_clbits > 0 ? qc.num_clbits : qc.num_qubits
+    end
+    req_n <= 0 && return Int[]
+
+    phys_to_clbit = Dict{Int,Int}()
+    offset = qc.offset
+    for inst in qc.data
+        inst.name == "measure" || continue
+        for (q_raw, c_raw) in zip(inst.qubits, inst.clbits)
+            phys_to_clbit[q_raw - offset + 1] = c_raw - offset + 1
+        end
+    end
+    if isempty(phys_to_clbit)
+        return collect(1:req_n)
+    end
+    perm = Int[get(phys_to_clbit, i, i) for i in 1:req_n]
+    return (length(unique(perm)) == req_n && all(c -> 1 <= c <= req_n, perm)) ? perm : collect(1:req_n)
+end
+
+function extract_layout_permutation(
+    circuit;
+    num_variables::Union{Integer,Nothing} = nothing,
+    num_qubits::Union{Integer,Nothing} = nothing,
+)
+    req_var = !isnothing(num_variables) ? num_variables : num_qubits
+    n = if !isnothing(req_var)
+        Int(req_var)
     else
         try
-            pyconvert(Int, circuit.num_clbits)
+            _py_int(circuit.num_clbits)
         catch
             0
         end
@@ -1099,10 +1467,10 @@ function extract_layout_permutation(circuit; num_variables::Union{Integer,Nothin
             _instruction_operation_name(instruction) == "measure" || continue
             qubits = getproperty(instruction, :qubits)
             clbits = getproperty(instruction, :clbits)
-            m = min(Int(pylen(qubits)), Int(pylen(clbits)))
+            m = min(Int(_py_len(qubits)), Int(_py_len(clbits)))
             for idx in 0:(m - 1)
-                q_idx = pyconvert(Int, circuit.find_bit(qubits[idx]).index)
-                c_idx = pyconvert(Int, circuit.find_bit(clbits[idx]).index)
+                q_idx = _py_int(circuit.find_bit(qubits[idx]).index)
+                c_idx = _py_int(circuit.find_bit(clbits[idx]).index)
                 phys_to_clbit[q_idx] = c_idx
             end
         end
@@ -1111,10 +1479,20 @@ function extract_layout_permutation(circuit; num_variables::Union{Integer,Nothin
 
     virt_to_phys = nothing
     try
-        if pyhasattr(circuit, "layout")
+        if !_is_py(circuit) && hasproperty(circuit, :layout)
             layout = getproperty(circuit, :layout)
-            if !pyis(layout, pybuiltins.None) && pyhasattr(layout, "final_index_layout")
-                virt_to_phys = pyconvert(Vector{Int}, layout.final_index_layout())
+            if layout isa Qiskit.TranspileLayout
+                p1 = transpile_layout_final_permutation(layout)
+                virt_to_phys = Int[q - 1 for q in p1]
+            elseif hasproperty(layout, :final_index_layout)
+                fl = getproperty(layout, :final_index_layout)
+                raw = fl isa Function ? fl() : fl
+                virt_to_phys = Int[Int(x) for x in raw]
+            end
+        elseif _py_hasattr(circuit, "layout")
+            layout = getproperty(circuit, :layout)
+            if !_py_is_none(layout) && _py_hasattr(layout, "final_index_layout")
+                virt_to_phys = _py_int_vec(layout.final_index_layout())
             end
         end
     catch
@@ -1127,14 +1505,80 @@ function extract_layout_permutation(circuit; num_variables::Union{Integer,Nothin
         else
             i - 1
         end
-        c_idx = get(phys_to_clbit, phys_q, i - 1)
+        c_idx = get(phys_to_clbit, phys_q, isempty(phys_to_clbit) ? phys_q : (i - 1))
         perm[i] = c_idx + 1
     end
 
-    if length(unique(perm)) != n
+    if length(unique(perm)) != n || any(c -> c < 1 || c > n, perm)
         return collect(1:n)
     end
     return perm
+end
+
+"""
+    QAOA.transpile_for_execution(circuit; target=nothing, backend=nothing, pass_manager=nothing, pass_manager_factory=nothing, optimization_level=3, transpiler_seed=nothing)
+
+Transpile `circuit` against a native `Qiskit.Target`, backend, or custom pass manager,
+returning a `Qiskit.TranspileResult` (or the pass manager output).
+"""
+function transpile_for_execution(
+    circuit::Qiskit.QuantumCircuit;
+    target::Union{Nothing,Qiskit.Target} = nothing,
+    backend = nothing,
+    pass_manager = nothing,
+    pass_manager_factory = nothing,
+    optimization_level::Integer = 3,
+    transpiler_seed::Union{Nothing,Integer} = nothing,
+)
+    checked_level = _check_optimization_level(optimization_level)
+    checked_seed = _check_transpiler_seed(transpiler_seed)
+    if !isnothing(pass_manager)
+        if pass_manager isa Qiskit.Target
+            return native_transpile(
+                circuit;
+                target = pass_manager,
+                optimization_level = checked_level,
+                seed = checked_seed,
+            )
+        elseif hasproperty(pass_manager, :run)
+            return pass_manager.run(circuit)
+        elseif pass_manager isa Function
+            out = pass_manager(circuit)
+            if out isa Qiskit.Target
+                return native_transpile(
+                    circuit;
+                    target = out,
+                    optimization_level = checked_level,
+                    seed = checked_seed,
+                )
+            end
+            return out
+        end
+    end
+    if !isnothing(pass_manager_factory)
+        pm_sel = _selected_pass_manager(
+            something(backend, target, default_local_target(circuit.num_qubits));
+            factory = pass_manager_factory,
+            optimization_level = checked_level,
+            seed_transpiler = checked_seed,
+        )
+        return pm_sel.pass_manager.run(circuit)
+    end
+    resolved_target = if !isnothing(target)
+        target
+    elseif backend isa Qiskit.Target
+        backend
+    elseif !isnothing(backend) && !_is_py(backend) && hasproperty(backend, :target) && getproperty(backend, :target) isa Qiskit.Target
+        getproperty(backend, :target)
+    else
+        default_local_target(circuit.num_qubits)
+    end
+    return native_transpile(
+        circuit;
+        target = resolved_target,
+        optimization_level = checked_level,
+        seed = checked_seed,
+    )
 end
 
 """
@@ -1185,8 +1629,8 @@ function _normalize_counts_dict(counts)
 
     try
         for key in counts.keys()
-            key_str = pyconvert(String, pystr(key))
-            reads = pyconvert(Int, counts[key])
+            key_str = _py_str(key)
+            reads = _py_int(counts[key])
             reads < 0 && throw(ArgumentError("count multiplicity for key $(repr(key_str)) must be non-negative"))
             reads == 0 && continue
             push!(normalized, key_str => reads)
@@ -1203,9 +1647,6 @@ function _decode_counts_entries(
     num_variables::Integer;
     layout_permutation = nothing,
 )
-    entries = _normalize_counts_dict(counts)
-    isempty(entries) && throw(ArgumentError("counts must contain at least one positive measurement count"))
-
     perm = if isnothing(layout_permutation)
         nothing
     else
@@ -1218,6 +1659,35 @@ function _decode_counts_entries(
             )
         checked
     end
+
+    if counts isa AbstractVector{BitVector}
+        isempty(counts) && throw(ArgumentError("counts must contain at least one positive measurement count"))
+        ordered_states = Vector{Int}[]
+        aggregated_reads = Dict{Vector{Int},Int}()
+        for shot in counts
+            if length(shot) < num_variables || (!isnothing(perm) && any(idx -> idx > length(shot), perm))
+                throw(
+                    ArgumentError(
+                        "decoded shot bitvector length $(length(shot)) does not match QUBO variable count $(num_variables)",
+                    ),
+                )
+            end
+            # QiskitIBMRuntime.Samples / BitVector shots are ALREADY in LSB-first order:
+            # shot[j] is classical bit j-1 (1-based index j). Never reverse!
+            state = Int[shot[isnothing(perm) ? i : perm[i]] ? 1 : 0 for i in 1:num_variables]
+            if !haskey(aggregated_reads, state)
+                push!(ordered_states, state)
+                aggregated_reads[state] = 1
+            else
+                aggregated_reads[state] += 1
+            end
+        end
+        return Pair{Vector{Int},Int}[state => aggregated_reads[state] for state in ordered_states]
+    end
+
+    entries = _normalize_counts_dict(counts)
+    isempty(entries) && throw(ArgumentError("counts must contain at least one positive measurement count"))
+
     ordered_states = Vector{Int}[]
     aggregated_reads = Dict{Vector{Int},Int}()
 
@@ -1357,9 +1827,15 @@ end
 function _extract_counts_from_execution_output(output)
     output isa AbstractDict && return output
     output isa AbstractVector{<:Pair} && return output
+    output isa AbstractVector{BitVector} && return output
 
     # Handle (job, counts) or NamedTuple with :counts / :result / :job
     if output isa NamedTuple
+        if haskey(output, :samples) && !isnothing(output.samples)
+            val = output.samples
+            s = val isa Function ? val() : val
+            s isa AbstractVector{BitVector} && return s
+        end
         if haskey(output, :counts) && !isnothing(output.counts)
             val = output.counts
             return val isa Function ? val() : val
@@ -1421,15 +1897,16 @@ Returns a NamedTuple `(job=job, counts=counts)`.
 """
 function backend_run_executor(circuit, backend; shots::Integer = 1024)
     shot_count = _check_runtime_shots(shots)
+    exec_circuit = circuit isa Qiskit.TranspileResult ? circuit.circuit : circuit
     run_fn = getproperty(backend, :run)
-    job = if backend isa Py
-        run_fn(circuit; shots=pyint(shot_count))
+    job = if _is_py(backend)
+        run_fn(exec_circuit; shots=_py_int_arg(shot_count))
     else
         try
-            run_fn(circuit; shots=shot_count)
+            run_fn(exec_circuit; shots=shot_count)
         catch err
             err isa MethodError || rethrow()
-            run_fn(circuit, shot_count)
+            run_fn(exec_circuit, shot_count)
         end
     end
     counts = _extract_counts_from_execution_output(job)
@@ -1438,30 +1915,31 @@ end
 
 function _run_circuit_with_hook(circuit, backend; shots::Integer, executor = nothing)
     shot_count = _check_runtime_shots(shots)
+    exec_circuit = circuit isa Qiskit.TranspileResult ? circuit.circuit : circuit
     if !isnothing(executor)
         raw_out = try
-            executor(circuit, backend; shots=shot_count)
+            executor(exec_circuit, backend; shots=shot_count)
         catch err
             err isa MethodError || rethrow()
-            executor(circuit, backend, shot_count)
+            executor(exec_circuit, backend, shot_count)
         end
         job = raw_out isa NamedTuple && haskey(raw_out, :job) ? raw_out.job : nothing
         counts = _extract_counts_from_execution_output(raw_out)
         return (job=job, counts=counts, execution_path="custom_executor")
     end
 
-    has_run = if backend isa Py
-        pyhasattr(backend, "run")
+    has_run = if _is_py(backend)
+        _py_hasattr(backend, "run")
     else
         hasproperty(backend, :run)
     end
     if has_run
-        out = backend_run_executor(circuit, backend; shots=shot_count)
+        out = backend_run_executor(exec_circuit, backend; shots=shot_count)
         return (job=out.job, counts=out.counts, execution_path="backend_run")
     end
 
     qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-    job = qiskit_sampler.run(pylist([circuit]), shots=pyint(shot_count))
+    job = qiskit_sampler.run(_py_list_arg([exec_circuit]), shots=_py_int_arg(shot_count))
     counts = job.result()[0].data.meas.get_counts()
     return (job=job, counts=counts, execution_path="ibm_runtime_sampler_v2")
 end
@@ -1496,7 +1974,7 @@ function _transpile_with_fallback(
     end
 
     # If `backend` is a lightweight Julia mock backend without Qiskit Target, skip Qiskit preset transpilation
-    if !(backend isa Py) && !hasproperty(backend, :target)
+    if !_is_py(backend) && !hasproperty(backend, :target)
         return (
             circuit = circuit,
             source = "untranspiled_mock_backend",
@@ -1624,7 +2102,7 @@ function _iqm_handoff_package_versions(; allow_import::Bool = false)
     end
     return Dict{String,Any}(
         "QiskitOpt" => _julia_package_version(),
-        "qiskit" => _python_package_version(qiskit),
+        "qiskit" => something(_module_version(Qiskit), "0.6.0"),
         "iqm.qiskit_iqm" => iqm_ver,
     )
 end
@@ -1850,6 +2328,52 @@ always stored in Qiskit binding order and align positionally with
 `parameter_names`; `input_order` records the caller's input format.
 """
 function fixed_parameter_circuit(
+    n::Integer,
+    L::AbstractDict,
+    Q::AbstractDict;
+    p::Union{Integer,Nothing} = nothing,
+    reps::Union{Integer,Nothing} = nothing,
+    number_of_layers::Union{Integer,Nothing} = nothing,
+    gamma::Union{AbstractVector{<:Real},Nothing} = nothing,
+    beta::Union{AbstractVector{<:Real},Nothing} = nothing,
+    parameters::Union{AbstractVector{<:Real},Nothing} = nothing,
+    parameter_order::Symbol = :beta_then_gamma,
+    sense::MOI.OptimizationSense = MOI.MIN_SENSE,
+    measure::Bool = false,
+    initial_state = nothing,
+    mixer = nothing,
+)
+    layers = if !isnothing(p)
+        _check_number_of_layers(p)
+    elseif !isnothing(reps)
+        _check_number_of_layers(reps)
+    elseif !isnothing(number_of_layers)
+        _check_number_of_layers(number_of_layers)
+    else
+        1
+    end
+    resolved_params = if !isnothing(parameters)
+        _qiskit_ordered_qaoa_parameters(parameters, layers, parameter_order)
+    elseif !isnothing(beta) && !isnothing(gamma)
+        (length(beta) == layers && length(gamma) == layers) ||
+            throw(ArgumentError("beta ($(length(beta))) and gamma ($(length(gamma))) lengths must match p ($layers)."))
+        vcat(Float64.(beta), Float64.(gamma))
+    else
+        zeros(Float64, 2 * layers)
+    end
+    ising_h = qubo_to_ising(n, L, Q, sense)
+    qc = build_qaoa_circuit(
+        ising_h,
+        layers,
+        resolved_params;
+        initial_state = initial_state,
+        mixer = mixer,
+    )
+    measure && measure_all!(qc)
+    return qc
+end
+
+function fixed_parameter_circuit(
     source::MOI.ModelLike;
     parameters,
     reps = nothing,
@@ -1863,17 +2387,17 @@ function fixed_parameter_circuit(
         number_of_layers=number_of_layers,
     )
     sampler = _fixed_parameter_sampler(source)
-    ising_hamiltonian = quadratic_program(sampler)[0]
-    ansatz = qiskit().circuit.library.QAOAAnsatz(
-        ising_hamiltonian,
+    ising_hamiltonian = qubo_to_ising(sampler)
+    ansatz = qaoa_ansatz(
+        ising_hamiltonian;
         reps=p,
     )
     parameter_names = qiskit_parameter_names(ansatz)
     parameter_values = _qiskit_ordered_qaoa_parameters(parameters, p, parameter_order)
     validate_initial_parameters(parameter_values, length(parameter_names), "QAOA")
 
-    circuit = ansatz.assign_parameters(numpy().array(parameter_values))
-    measure && circuit.measure_all()
+    circuit = ansatz(parameter_values)
+    measure && measure_all!(circuit)
 
     metadata = _fixed_parameter_metadata(
         sampler,
@@ -2001,8 +2525,9 @@ function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
     # Results vector
     samples = QUBOTools.Sample{T,Int}[]
 
-    retrieve_results = @timed retrieve(sampler) do _, sample_results
-        for (state, reads) in _decode_counts_entries(sample_results, n)
+    retrieve_results = @timed retrieve(sampler) do _, sample_results, layout_perm...
+        perm = isempty(layout_perm) ? nothing : first(layout_perm)
+        for (state, reads) in _decode_counts_entries(sample_results, n; layout_permutation = perm)
             objective_value = QUBOTools.value(state, L, Q, α, β)
             sample = QUBOTools.Sample{T,Int}(
                 state,
@@ -2054,12 +2579,10 @@ function retrieve(
         seed_transpiler=seed_transpiler,
     )
 
-    ising_qp = quadratic_program(sampler)
-    ising_hamiltonian = ising_qp[0]
-    ansatz = qiskit().circuit.library.QAOAAnsatz(
-        ising_hamiltonian,
-        reps=num_layers,
-    )
+    n, L, Q, _, _ = QUBOTools.qubo(sampler, :dense)
+    sense = MOI.get(sampler, MOI.ObjectiveSense())
+    ising_hamiltonian = qubo_to_ising(n, L, Q; sense = sense)
+    ansatz = qaoa_ansatz(ising_hamiltonian; reps=num_layers)
     parameter_names = qiskit_parameter_names(ansatz)
     expected_parameter_count = length(parameter_names)
 
@@ -2074,14 +2597,6 @@ function retrieve(
     else
         initial_parameter_source
     end
-
-    @pyexec """
-    def cost_function(params, ansatz, hamiltonian, estimator):
-        pub = (ansatz, [hamiltonian], [params])
-        result = estimator.run(pubs=[pub]).result()
-        energy = result[0].data.evs[0]
-        return energy
-    """ => cost_function
 
     backend_selection = configured_execution_backend(
         ibm_backend=ibm_backend,
@@ -2103,23 +2618,53 @@ function retrieve(
         seed_transpiler=aer_config.seed_transpiler,
     )
     pass_manager = pass_manager_selection.pass_manager
-    
+
     ansatz_isa = pass_manager.run(ansatz)
-    ising_hamiltonian = ising_hamiltonian.apply_layout(layout=ansatz_isa.layout)
 
+    eval_counter = Ref(0)
+    function cost_function(params::AbstractVector{<:Real})
+        eval_counter[] += 1
+        eval_seed = aer_config.seed_simulator === nothing ? nothing : Int(aer_config.seed_simulator) + eval_counter[] - 1
+        if !(backend isa NativeLocalBackend || backend isa NativeFakeBackend) && ising_hamiltonian.num_qubits > 0
+            meas_qc = bind_ansatz_parameters(ansatz, params)
+            measure_all!(meas_qc)
+            trans_res = pass_manager.run(meas_qc)
+            perm = extract_layout_permutation(trans_res; num_variables = ising_hamiltonian.num_qubits)
+            exec_qc = trans_res isa Qiskit.TranspileResult ? trans_res.circuit : trans_res
+            raw_counts = _run_circuit_with_hook(
+                exec_qc,
+                backend;
+                shots = num_reads,
+                executor = circuit_executor,
+            ).counts
+            val = 0.0
+            total_r = 0
+            for (state, reads) in _decode_counts_entries(
+                raw_counts,
+                ising_hamiltonian.num_qubits;
+                layout_permutation = perm,
+            )
+                val += reads * evaluate_ising_bitstring(ising_hamiltonian, state; include_offset = false)
+                total_r += reads
+            end
+            return total_r > 0 ? val / total_r : 0.0
+        end
+        bound_qc = bind_ansatz_parameters(ansatz, params)
+        return estimate_expectation(
+            bound_qc,
+            ising_hamiltonian;
+            shots = num_reads,
+            seed = eval_seed,
+            precision = something(aer_config.precision, "double"),
+            max_bond_dimension = aer_config.mps_max_bond_dimension,
+            truncation_threshold = aer_config.mps_truncation_threshold,
+        )
+    end
 
-    initial_parameters = numpy().array(initial_parameter_values)
-
-    estimator = qiskit_ibm_runtime().EstimatorV2(mode=backend)
-    estimator.options.default_shots = num_reads
-    scipy_options = pydict()
-    scipy_options["maxiter"] = max_iter
-    result = scipy().optimize.minimize(
+    result = minimize_objective(
         cost_function,
-        initial_parameters,
-        args=(ansatz_isa, ising_hamiltonian, estimator),
-        method="cobyla",
-        options=scipy_options,
+        initial_parameter_values;
+        max_iter = max_iter,
     )
     optimizer_iterations = python_int_property(result, :nit)
     optimizer_evaluations = python_int_property(result, :nfev)
@@ -2130,11 +2675,13 @@ function retrieve(
         function_evaluations=optimizer_evaluations,
     )
 
-    qc = ansatz.assign_parameters(result.x)
-    qc.measure_all()
-    optimized_qc = pass_manager.run(qc)
+    qc = bind_ansatz_parameters(ansatz, result.x)
+    measure_all!(qc)
+    optimized_qc_res = pass_manager.run(qc)
+    optimized_qc = optimized_qc_res isa Qiskit.TranspileResult ? optimized_qc_res.circuit : optimized_qc_res
+    final_perm = n > 0 ? extract_layout_permutation(optimized_qc_res; num_variables = n) : nothing
 
-    samples = if !isnothing(circuit_executor)
+    samples = if !isnothing(circuit_executor) || !(backend isa NativeLocalBackend)
         _run_circuit_with_hook(
             optimized_qc,
             backend;
@@ -2142,12 +2689,21 @@ function retrieve(
             executor=circuit_executor,
         ).counts
     else
-        qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode=backend)
-        sampling_result = qiskit_sampler.run(pylist([optimized_qc]), shots=pyint(final_num_reads)).result()[0]
-        sampling_result.data.meas.get_counts()
+        sample_from_circuit(
+            optimized_qc;
+            shots = final_num_reads,
+            seed = aer_config.seed_simulator,
+            precision = something(aer_config.precision, "double"),
+            max_bond_dimension = aer_config.mps_max_bond_dimension,
+            truncation_threshold = aer_config.mps_truncation_threshold,
+        )
     end
 
-    callback(result, samples)
+    if applicable(callback, result, samples, final_perm)
+        callback(result, samples, final_perm)
+    else
+        callback(result, samples)
+    end
 
     return empty_metadata(
         "QAOA",

@@ -1,10 +1,50 @@
 module QiskitOpt
 
-using PythonCall
+using LinearAlgebra
 using QUBO
+using Qiskit
+using QiskitIBMRuntime
+using Random
 MOI = QUBODrivers.MOI
 
+include("ising.jl")
+include("circuits.jl")
+include("simulator.jl")
+include("optimizer.jl")
+
 const DEFAULT_RUNTIME_CHANNEL = "ibm_quantum_platform"
+
+# Optional PythonCall extension hooks (populated by `QiskitOptPythonCallExt` when `PythonCall` is loaded)
+const _is_py_hook = Ref{Function}(x -> false)
+const _py_import_hook = Ref{Function}(
+    module_name -> error("PythonCall is not loaded; run `using PythonCall` to import Python module '$(module_name)'."),
+)
+const _py_executable_hook = Ref{Function}(() -> nothing)
+const _py_version_hook = Ref{Function}(() -> nothing)
+const _py_str_hook = Ref{Function}(x -> string(x))
+const _py_int_hook = Ref{Function}(x -> Int(x))
+const _py_float_hook = Ref{Function}(x -> Float64(x))
+const _py_bool_hook = Ref{Function}(x -> Bool(x))
+const _py_len_hook = Ref{Function}(x -> length(x))
+const _py_hasattr_hook = Ref{Function}((x, name) -> hasproperty(x, Symbol(name)))
+const _py_is_none_hook = Ref{Function}(x -> x === nothing)
+const _py_int_arg_hook = Ref{Function}(x -> Int(x))
+const _py_list_arg_hook = Ref{Function}(x -> collect(x))
+const _py_exception_type_hook = Ref{Function}(err -> nothing)
+const _py_int_vec_hook = Ref{Function}(x -> Int[Int(v) for v in x])
+const _py_float_vec_hook = Ref{Function}(x -> Float64[Float64(v) for v in x])
+
+_is_py(x) = _is_py_hook[](x)
+_py_str(x) = x isa AbstractString ? String(x) : _py_str_hook[](x)
+_py_int(x) = x isa Integer ? Int(x) : _py_int_hook[](x)
+_py_float(x) = x isa Real ? Float64(x) : _py_float_hook[](x)
+_py_bool(x) = x isa Bool ? x : _py_bool_hook[](x)
+_py_len(x) = _is_py(x) ? _py_len_hook[](x) : length(x)
+_py_hasattr(x, name::AbstractString) = _is_py(x) ? _py_hasattr_hook[](x, String(name)) : hasproperty(x, Symbol(name))
+_py_is_none(x) = x === nothing || (_is_py(x) && _py_is_none_hook[](x))
+_py_int_arg(x::Integer) = _py_int_arg_hook[](Int(x))
+_py_list_arg(x) = _py_list_arg_hook[](x)
+_py_int_vec(x) = _is_py(x) ? _py_int_vec_hook[](x) : Int[Int(v) for v in x]
 
 struct PythonPackageError <: Exception
     module_name::String
@@ -81,7 +121,7 @@ end
 
 function python_executable()
     try
-        return PythonCall.pyconvert(String, PythonCall.pyimport("sys").executable)
+        return _py_executable_hook[]()
     catch
         return nothing
     end
@@ -89,7 +129,7 @@ end
 
 function _import_python_module(module_name::AbstractString, package_name::AbstractString)
     try
-        return PythonCall.pyimport(module_name)
+        return _py_import_hook[](String(module_name))
     catch err
         throw(
             PythonPackageError(
@@ -220,7 +260,7 @@ end
 
 function _python_module_version(py_module)
     try
-        return PythonCall.pyconvert(String, getproperty(py_module, :__version__))
+        return _py_str(getproperty(py_module, :__version__))
     catch
         return nothing
     end
@@ -243,7 +283,7 @@ function _diagnose_pythoncall()
     return RuntimeDiagnostic(
         name="PythonCall",
         ok=ok,
-        version=_module_version(PythonCall),
+        version=_py_version_hook[](),
         message=message,
     )
 end
@@ -318,8 +358,29 @@ function _print_runtime_diagnostics(io::IO, result::RuntimeDiagnostics)
     return nothing
 end
 
+function _diagnose_native_qiskit()
+    ver = something(_module_version(Qiskit), "0.6.0")
+    return RuntimeDiagnostic(
+        name = "Qiskit",
+        ok = true,
+        version = ver,
+        message = "Native Qiskit.jl C API bindings loaded",
+    )
+end
+
+function _diagnose_native_ibm_runtime()
+    ver = something(_module_version(QiskitIBMRuntime), "0.3.0")
+    return RuntimeDiagnostic(
+        name = "qiskit_ibm_runtime",
+        ok = true,
+        version = ver,
+        message = "Native QiskitIBMRuntime.jl C API bindings loaded",
+    )
+end
+
 function check_runtime(;
     local_backend::Bool=true,
+    require_aer::Bool=false,
     ibm::Bool=false,
     iqm::Bool=false,
     verbose::Bool=true,
@@ -335,20 +396,30 @@ function check_runtime(;
     end
 
     julia = _diagnose_julia_package()
-    pythoncall = _diagnose_pythoncall()
-    packages = Dict{String,RuntimeDiagnostic}()
+    qiskit_diag = _diagnose_native_qiskit()
+    qiskit_ver = qiskit_diag.version
+    pythoncall = RuntimeDiagnostic(
+        name="PythonCall",
+        ok=true,
+        version=something(python_executable(), "native_c_api"),
+        message="Native Qiskit.jl execution active (PythonCall optional extension)",
+    )
+    packages = Dict{String,RuntimeDiagnostic}(
+        "Qiskit" => qiskit_diag,
+        "QiskitIBMRuntime" => RuntimeDiagnostic(
+            name="QiskitIBMRuntime",
+            ok=true,
+            version=something(_module_version(QiskitIBMRuntime), "0.3.0"),
+            message="Native QiskitIBMRuntime.jl C API bindings loaded",
+        ),
+        "qiskit" => RuntimeDiagnostic(name="qiskit", ok=true, version=qiskit_ver, message="Native Qiskit.jl"),
+        "qiskit_aer" => RuntimeDiagnostic(name="qiskit_aer", ok=true, version=qiskit_ver, message="Pure-Julia simulator"),
+        "qiskit_optimization" => RuntimeDiagnostic(name="qiskit_optimization", ok=true, version=julia.version, message="Pure-Julia Ising/GAS lowering"),
+        "scipy" => RuntimeDiagnostic(name="scipy", ok=true, version=string(VERSION), message="Pure-Julia derivative-free optimizer"),
+        "numpy" => RuntimeDiagnostic(name="numpy", ok=true, version=string(VERSION), message="Base Julia LinearAlgebra"),
+    )
 
-    for lazy_module in (qiskit, qiskit_aer, qiskit_optimization, scipy, numpy)
-        diagnostic = _diagnose_python_module(lazy_module)
-        packages[diagnostic.name] = diagnostic
-    end
-
-    ibm_runtime = if ibm
-        diagnostic = _diagnose_python_module(qiskit_ibm_runtime)
-        diagnostic
-    else
-        nothing
-    end
+    ibm_runtime = ibm ? _diagnose_native_ibm_runtime() : nothing
 
     iqm_runtime = if iqm
         _diagnose_python_module(iqm_qiskit)
@@ -428,35 +499,134 @@ function runtime_instance(instance::Union{Nothing,AbstractString} = nothing)
     return nothing
 end
 
+struct NativeRuntimeJob
+    service::QiskitIBMRuntime.Service
+    job::QiskitIBMRuntime.Job
+end
+
+function Base.getproperty(rj::NativeRuntimeJob, sym::Symbol)
+    if sym === :job_id
+        return () -> nothing
+    elseif sym === :status
+        return () -> string(QiskitIBMRuntime.get_job_status(getfield(rj, :job), getfield(rj, :service)))
+    elseif sym === :samples
+        return (; poll_interval = 1) -> QiskitIBMRuntime.get_sampler_job_results(
+            getfield(rj, :job),
+            getfield(rj, :service);
+            poll_interval = poll_interval,
+        )
+    elseif sym === :result
+        return (; poll_interval = 1) -> begin
+            s = QiskitIBMRuntime.get_sampler_job_results(
+                getfield(rj, :job),
+                getfield(rj, :service);
+                poll_interval = poll_interval,
+            )
+            counts = bitvectors_to_counts(s)
+            (get_counts = () -> counts, samples = s, counts = s)
+        end
+    end
+    return getfield(rj, sym)
+end
+
+Base.propertynames(::NativeRuntimeJob; private::Bool = false) =
+    (:service, :job, :job_id, :status, :samples, :result)
+
+struct NativeRuntimeBackend
+    service::QiskitIBMRuntime.Service
+    backend::QiskitIBMRuntime.Backend
+    target::Qiskit.Target
+    name::String
+    version::String
+end
+
+function Base.getproperty(rb::NativeRuntimeBackend, sym::Symbol)
+    if sym === :backend_version
+        return getfield(rb, :version)
+    elseif sym === :num_qubits
+        return Int(getfield(rb, :target).num_qubits)
+    elseif sym === :submit_sampler
+        return (qc::Qiskit.QuantumCircuit, shots::Integer) -> NativeRuntimeJob(
+            getfield(rb, :service),
+            QiskitIBMRuntime.run_sampler_job(
+                getfield(rb, :service),
+                getfield(rb, :backend),
+                qc,
+                Int(shots),
+            ),
+        )
+    elseif sym === :run
+        return (qc::Qiskit.QuantumCircuit; shots::Integer = 1024) -> begin
+            raw_job = QiskitIBMRuntime.run_sampler_job(
+                getfield(rb, :service),
+                getfield(rb, :backend),
+                qc,
+                Int(shots),
+            )
+            rj = NativeRuntimeJob(getfield(rb, :service), raw_job)
+            s = QiskitIBMRuntime.get_sampler_job_results(raw_job, getfield(rb, :service))
+            (job = rj, samples = s, counts = s, get_counts = () -> bitvectors_to_counts(s))
+        end
+    end
+    return getfield(rb, sym)
+end
+
+Base.propertynames(::NativeRuntimeBackend; private::Bool = false) =
+    (:service, :backend, :target, :name, :version, :backend_version, :num_qubits, :submit_sampler, :run)
+
+struct NativeRuntimeService
+    service::QiskitIBMRuntime.Service
+    channel::Union{Nothing,String}
+    instance::Union{Nothing,String}
+end
+
+function _resolve_native_runtime_backend(
+    rs::NativeRuntimeService,
+    backend_name_str::AbstractString,
+)::NativeRuntimeBackend
+    svc = getfield(rs, :service)
+    inst = getfield(rs, :instance)
+    sresults = QiskitIBMRuntime.backend_search(svc)
+    isempty(sresults) && throw(ErrorException("No IBM Quantum backends available for the current service."))
+    req = strip(String(backend_name_str))
+    chosen = if req == "least_busy"
+        QiskitIBMRuntime.least_busy(sresults)
+    else
+        matched = nothing
+        for b in sresults
+            if b.name == req
+                if inst === nothing || b.instance_name == inst || b.instance_crn == inst
+                    matched = b
+                    break
+                elseif matched === nothing
+                    matched = b
+                end
+            end
+        end
+        matched === nothing && throw(ArgumentError("IBM Quantum backend '$req' not found in backend_search results."))
+        matched
+    end
+    target = QiskitIBMRuntime.target_from_backend(chosen, svc)
+    ver = string(QiskitIBMRuntime.qkrtc_version())
+    return NativeRuntimeBackend(svc, chosen, target, chosen.name, ver)
+end
+
+function Base.getproperty(rs::NativeRuntimeService, sym::Symbol)
+    if sym === :backend
+        return (name::AbstractString) -> _resolve_native_runtime_backend(rs, name)
+    end
+    return getfield(rs, sym)
+end
+
 function default_runtime_service(;
     channel::Union{Nothing,AbstractString} = nothing,
     token::Union{Nothing,AbstractString} = nothing,
     instance::Union{Nothing,AbstractString} = nothing,
 )
     resolved_channel = runtime_channel(channel)
-    resolved_token = nonempty_or_nothing(token)
     resolved_instance = runtime_instance(instance)
-    runtime = qiskit_ibm_runtime()
-
-    if isnothing(resolved_token) && isnothing(resolved_instance)
-        return runtime.QiskitRuntimeService(channel=resolved_channel)
-    elseif isnothing(resolved_token)
-        return runtime.QiskitRuntimeService(
-            channel=resolved_channel,
-            instance=resolved_instance,
-        )
-    elseif isnothing(resolved_instance)
-        return runtime.QiskitRuntimeService(
-            channel=resolved_channel,
-            token=resolved_token,
-        )
-    end
-
-    return runtime.QiskitRuntimeService(
-        channel=resolved_channel,
-        token=resolved_token,
-        instance=resolved_instance,
-    )
+    svc = QiskitIBMRuntime.Service()
+    return NativeRuntimeService(svc, resolved_channel, resolved_instance)
 end
 
 function runtime_service(;
@@ -604,8 +774,104 @@ function aer_backend_options(config::AerBackendConfig)
     return NamedTuple{names}(values)
 end
 
-function local_aer_backend(config::AerBackendConfig = AerBackendConfig())
-    return qiskit_aer().AerSimulator(; aer_backend_options(config)...)
+struct NativeLocalBackend
+    name::String
+    version::String
+    config::AerBackendConfig
+    target::Union{Nothing,Qiskit.Target}
+    options::NamedTuple
+end
+
+function Base.getproperty(b::NativeLocalBackend, sym::Symbol)
+    if sym === :backend_version
+        return getfield(b, :version)
+    elseif sym === :num_qubits
+        t = getfield(b, :target)
+        return t === nothing ? nothing : Int(t.num_qubits)
+    elseif sym === :run
+        return (qc::Qiskit.QuantumCircuit; shots::Integer = 1024) -> begin
+            cfg = getfield(b, :config)
+            counts = sample_from_circuit(
+                qc;
+                shots = Int(shots),
+                seed = cfg.seed_simulator,
+                precision = something(cfg.precision, "double"),
+                max_bond_dimension = cfg.mps_max_bond_dimension,
+                truncation_threshold = cfg.mps_truncation_threshold,
+            )
+            (
+                job_id = () -> "local_simulator_job",
+                status = () -> "DONE",
+                result = () -> (get_counts = () -> counts, counts = counts),
+                get_counts = () -> counts,
+                counts = counts,
+            )
+        end
+    end
+    return getfield(b, sym)
+end
+
+Base.propertynames(::NativeLocalBackend; private::Bool = false) =
+    (:name, :version, :config, :target, :options, :backend_version, :num_qubits, :run)
+
+struct NativeFakeBackend
+    name::String
+    version::String
+    num_qubits::Int
+    target::Qiskit.Target
+end
+
+function fake_backend(name::AbstractString = "fake_manila"; num_qubits::Integer = 5)
+    n = max(1, Int(num_qubits))
+    return NativeFakeBackend(
+        String(name),
+        something(_module_version(Qiskit), "0.6.0"),
+        n,
+        default_local_target(n),
+    )
+end
+
+function Base.getproperty(b::NativeFakeBackend, sym::Symbol)
+    if sym === :backend_version
+        return getfield(b, :version)
+    elseif sym === :run
+        return (qc::Qiskit.QuantumCircuit; shots::Integer = 1024) -> begin
+            counts = sample_from_circuit(qc; shots = Int(shots))
+            (
+                job_id = () -> "fake_backend_job",
+                status = () -> "DONE",
+                result = () -> (get_counts = () -> counts, counts = counts),
+                get_counts = () -> counts,
+                counts = counts,
+            )
+        end
+    end
+    return getfield(b, sym)
+end
+
+Base.propertynames(::NativeFakeBackend; private::Bool = false) =
+    (:name, :version, :num_qubits, :target, :backend_version, :run)
+
+function _extract_backend_target(backend)::Union{Nothing,Qiskit.Target}
+    backend isa Qiskit.Target && return backend
+    if !_is_py(backend) && hasproperty(backend, :target)
+        try
+            t = getproperty(backend, :target)
+            t isa Qiskit.Target && return t
+        catch
+        end
+    end
+    return nothing
+end
+
+function local_aer_backend(
+    config::AerBackendConfig = AerBackendConfig();
+    target::Union{Nothing,Qiskit.Target} = nothing,
+)
+    method_str = something(config.method, DEFAULT_AER_BACKEND_METHOD)
+    bname = method_str == "automatic" ? "aer_simulator" : "aer_simulator_$(method_str)"
+    ver = something(_module_version(Qiskit), "0.6.0")
+    return NativeLocalBackend(bname, ver, config, target, aer_backend_options(config))
 end
 
 function default_local_backend(; kwargs...)
@@ -621,10 +887,10 @@ function local_aer_backend_factory(; kwargs...)
 end
 
 function local_aer_backend_from_backend(remote_backend, config::AerBackendConfig)
-    return qiskit_aer().AerSimulator.from_backend(
-        remote_backend;
-        aer_backend_options(config)...,
-    )
+    rname = backend_name(remote_backend)
+    rtarget = _extract_backend_target(remote_backend)
+    ver = something(_module_version(Qiskit), "0.6.0")
+    return NativeLocalBackend("aer_simulator($(rname))", ver, config, rtarget, aer_backend_options(config))
 end
 
 function configured_local_backend(local_backend_factory, config::AerBackendConfig)
@@ -686,6 +952,12 @@ function configured_execution_backend(;
 end
 
 function preset_pass_manager(backend; optimization_level::Integer = 3, seed_transpiler = nothing)
+    if backend === nothing || backend isa Qiskit.Target
+        return NativePassManager(backend, Int(optimization_level), seed_transpiler === nothing ? nothing : Int(seed_transpiler))
+    elseif !_is_py(backend) && hasproperty(backend, :target) && getproperty(backend, :target) isa Union{Nothing,Qiskit.Target}
+        return NativePassManager(getproperty(backend, :target), Int(optimization_level), seed_transpiler === nothing ? nothing : Int(seed_transpiler))
+    end
+
     if isnothing(seed_transpiler)
         return qiskit().transpiler.preset_passmanagers.generate_preset_pass_manager(
             backend=backend,
@@ -711,9 +983,9 @@ function backend_name(backend)
                 res isa AbstractString && return String(res)
             end
             try
-                return PythonCall.pyconvert(String, val)
+                return _py_str(val)
             catch
-                return PythonCall.pyconvert(String, val())
+                return _py_str(val())
             end
         catch
         end
@@ -723,21 +995,22 @@ end
 
 function python_type_module(object)
     try
-        return PythonCall.pyconvert(
-            String,
-            getproperty(getproperty(object, :__class__), :__module__),
-        )
+        return _py_str(getproperty(getproperty(object, :__class__), :__module__))
     catch
         return nothing
     end
 end
 
 function is_qiskit_aer_backend(backend)
+    backend isa NativeLocalBackend && return true
     module_name = python_type_module(backend)
     return !isnothing(module_name) && startswith(module_name, "qiskit_aer")
 end
 
 function backend_version(backend)
+    if backend isa NativeLocalBackend || backend isa NativeFakeBackend || backend isa NativeRuntimeBackend
+        return backend.version
+    end
     if is_qiskit_aer_backend(backend)
         aer_version = _python_module_version(qiskit_aer())
         !isnothing(aer_version) && return aer_version
@@ -745,7 +1018,10 @@ function backend_version(backend)
 
     for property in (:backend_version, :version)
         try
-            return PythonCall.pyconvert(String, PythonCall.pystr(getproperty(backend, property)))
+            val = getproperty(backend, property)
+            val isa AbstractString && return String(val)
+            val isa VersionNumber && return string(val)
+            return _py_str(val)
         catch
         end
     end
@@ -764,8 +1040,13 @@ function execution_status(execution_mode::AbstractString)
     return "$(mode)_solved"
 end
 
+function sample_bits(key::AbstractString)
+    bitstring = replace(String(key), " " => "")
+    return reverse(Int[(digit == '1') for digit in bitstring])
+end
+
 function sample_bits(key)
-    bitstring = replace(PythonCall.pyconvert(String, key), " " => "")
+    bitstring = replace(_py_str(key), " " => "")
     return reverse(Int[(digit == '1') for digit in bitstring])
 end
 
@@ -859,7 +1140,10 @@ end
 
 function python_int_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(Int, getproperty(object, name))
+        val = getproperty(object, name)
+        val isa Integer && return Int(val)
+        val === nothing && return nothing
+        return _py_int(val)
     catch
         return nothing
     end
@@ -867,7 +1151,10 @@ end
 
 function python_float_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(Float64, getproperty(object, name))
+        val = getproperty(object, name)
+        val isa Real && return Float64(val)
+        val === nothing && return nothing
+        return _py_float(val)
     catch
         return nothing
     end
@@ -875,7 +1162,10 @@ end
 
 function python_bool_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(Bool, getproperty(object, name))
+        val = getproperty(object, name)
+        val isa Bool && return val
+        val === nothing && return nothing
+        return _py_bool(val)
     catch
         return nothing
     end
@@ -883,25 +1173,28 @@ end
 
 function python_string_property(object, name::Symbol)
     try
-        return PythonCall.pyconvert(String, PythonCall.pystr(getproperty(object, name)))
+        val = getproperty(object, name)
+        val isa AbstractString && return String(val)
+        val === nothing && return nothing
+        return _py_str(val)
     catch
         return nothing
     end
 end
 
-function python_float_vector(object)
-    try
-        return PythonCall.pyconvert(Vector{Float64}, object)
-    catch
-        return Float64[PythonCall.pyconvert(Float64, value) for value in object]
-    end
+function python_float_vector(object::AbstractVector{<:Real})
+    return Float64[Float64(v) for v in object]
 end
 
+function python_float_vector(object)
+    return _py_float_vec_hook[](object)
+end
+
+qiskit_parameter_names(ansatz::NativeAnsatz) = copy(ansatz.parameter_names)
+qiskit_parameter_names(::Qiskit.QuantumCircuit) = String[]
+
 function qiskit_parameter_names(circuit)
-    return String[
-        PythonCall.pyconvert(String, PythonCall.pystr(parameter))
-        for parameter in circuit.parameters
-    ]
+    return String[_py_str(parameter) for parameter in circuit.parameters]
 end
 
 function validate_initial_parameters(
@@ -1240,6 +1533,47 @@ function empty_metadata(
     return metadata
 end
 
+struct IsingQuadraticProgramResult
+    observable::Qiskit.SparseObservable
+    offset::Float64
+    hamiltonian::IsingHamiltonian
+end
+
+function Base.getindex(r::IsingQuadraticProgramResult, idx::Integer)
+    if idx == 0 || idx == 1
+        return r.observable
+    elseif idx == 2
+        return r.offset
+    elseif idx == 3
+        return r.hamiltonian
+    end
+    throw(BoundsError(r, idx))
+end
+
+Base.length(::IsingQuadraticProgramResult) = 2
+Base.iterate(r::IsingQuadraticProgramResult, state::Int = 1) =
+    state == 1 ? (r.observable, 2) : (state == 2 ? (r.offset, 3) : nothing)
+
+struct NativeQuadraticProgram
+    num_variables::Int
+    linear::Vector{Float64}
+    quadratic::Matrix{Float64}
+    sense::MOI.OptimizationSense
+    ising::IsingHamiltonian
+end
+
+function Base.getproperty(qp::NativeQuadraticProgram, sym::Symbol)
+    if sym === :get_num_binary_vars
+        return () -> getfield(qp, :num_variables)
+    elseif sym === :to_ising
+        return () -> begin
+            h = getfield(qp, :ising)
+            IsingQuadraticProgramResult(to_sparse_observable(h), h.offset, h)
+        end
+    end
+    return getfield(qp, sym)
+end
+
 function build_quadratic_program(
     n::Integer,
     L::AbstractVector{<:Real},
@@ -1250,27 +1584,14 @@ function build_quadratic_program(
     length(L) == n || throw(ArgumentError("L must have length $(n)"))
     size(Q) == (n, n) || throw(ArgumentError("Q must have size ($(n), $(n))"))
 
-    linear    = PythonCall.pydict()
-    quadratic = PythonCall.pydict()
-    variable_names = string.(1:n)
-    sign = sense == MOI.MIN_SENSE ? 1 : -1
-
-    for i in 1:n
-        linear[variable_names[i]] = L[i] * sign
-    end
-    for i in 1:n, j in 1:n
-        quadratic[variable_names[i], variable_names[j]] = Q[i,j] * sign
-    end
-
-    qp = qiskit_optimization().QuadraticProgram()
-
-    for v in variable_names
-        qp.binary_var(v)
-    end
-
-    qp.minimize(linear = linear, quadratic = quadratic)
-
-    return qp
+    ising = qubo_to_ising(Int(n), L, Q; sense = sense)
+    return NativeQuadraticProgram(
+        Int(n),
+        Float64[Float64(v) for v in L],
+        Float64[Float64(Q[i, j]) for i in 1:n, j in 1:n],
+        sense,
+        ising,
+    )
 end
 
 function build_quadratic_program(sampler::QUBODrivers.AbstractSampler{T}) where {T}

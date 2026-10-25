@@ -88,7 +88,7 @@ local Aer.
   attribution, and experimental submodule boundary for `QiskitOpt.PCE`.
 
 ## Runtime Diagnostics
-Use `check_runtime` to verify the Julia/Python bridge and local Qiskit stack before running an optimizer:
+Use `check_runtime` to verify the native `Qiskit.jl` + `QiskitIBMRuntime.jl` stack and local simulator before running an optimizer:
 
 ```julia
 using QiskitOpt
@@ -98,8 +98,7 @@ diagnostics.ok
 ```
 
 Julia reserves `local` as syntax, so the Julia-callable keyword is `local_backend`.
-With `ibm=false`, diagnostics do not import `qiskit_ibm_runtime`. Set `ibm=true` when you want IBM Runtime availability reported separately.
-The local backend check verifies the default Aer backend. Current QAOA/VQE local solves still use `qiskit_ibm_runtime` `EstimatorV2` and `SamplerV2` primitives, so run with `ibm=true` when you want a full solver-readiness check.
+With `ibm=false`, diagnostics verify the native `Qiskit.jl` circuit/transpiler engine and pure-Julia local simulator without querying `QiskitIBMRuntime.jl` credentials. Set `ibm=true` when you want IBM Runtime C-API availability reported separately, or `iqm=true` (after `using PythonCall`) when testing optional `iqm.qiskit_iqm` Python integration.
 
 ## Updating optimization parameters
 
@@ -118,8 +117,8 @@ set_attribute(model, VQE.MaximumIterations(), 100) # or QAOA.MaximumIterations
 # deterministically derives the local Aer and transpiler seeds from this value.
 set_attribute(model, QiskitOpt.QUBODrivers.RandomSeed(), 73001)
 
-# Ansatz
-set_attribute(model, VQE.Ansatz(), QiskitOpt.qiskit.circuit.library.EfficientSU2)
+# Ansatz (native descriptor or legacy QiskitOpt.qiskit.circuit.library.EfficientSU2)
+set_attribute(model, VQE.Ansatz(), QiskitOpt.NativeAnsatz(:efficient_su2, 3; reps=3))
 
 # Number of QAOA ansatz repetitions (for QAOA only)
 set_attribute(model, QAOA.NumberOfLayers(), 5)
@@ -131,15 +130,15 @@ set_attribute(model, GAS.CoefficientPrecision(), 2)  # decimal precision when in
 ```
 
 ## Grover Adaptive Search (`GAS.Optimizer`)
-`QiskitOpt.GAS.Optimizer` wraps `qiskit_optimization.algorithms.GroverOptimizer` for small binary QUBO instances:
-- **Auto value-register sizing**: When `GAS.NumValueQubits()` is `nothing` (default), `GAS.estimate_num_value_qubits(L, Q)` computes the minimum two's-complement bit width `max(2, ceil(Int, log2(max(pos_sum, -neg_sum) + 1)) + 1)` from the posiform upper bound `pos_sum` and negaform lower bound `neg_sum`.
-- **Coefficient integerization**: Because `GroverOptimizer`'s value register uses integer arithmetic, `GAS.integerize_coefficients(L, Q; precision=1)` scales and rounds non-integer QUBO coefficients by `10^precision` for the oracle while evaluating returned states against the **original unrounded QUBO** (`QUBOTools.value(state, L, Q, α, β)`) so reported objective values remain exact in the model's units.
-- **Backend & seed attributes**: `GAS.Optimizer` accepts the same local Aer, fake-backend, and IBM Runtime attributes (`IBMBackend`, `IBMFakeBackend`, `IsLocal`, `Aer*`, `TranspilerSeed`, `Channel`, `Instance`, `RandomSeed`, `NumberOfReads`, and `FinalNumberOfReads`) as `QAOA.Optimizer` and `VQE.Optimizer`.
+`QiskitOpt.GAS.Optimizer` implements Grover Adaptive Search (Gilliam et al., 2021) natively in Julia for small binary QUBO instances:
+- **Auto value-register sizing**: When `GAS.NumValueQubits()` (or alias `GAS.NumQubits()`) is `nothing` (default), `GAS.estimate_num_value_qubits(L, Q)` computes the minimum two's-complement bit width `max(2, ceil(Int, log2(max(pos_sum, -neg_sum) + 1)) + 1)` from the posiform upper bound `pos_sum` and negaform lower bound `neg_sum`.
+- **Coefficient integerization**: Because the GAS value register uses two's-complement integer arithmetic, `GAS.integerize_coefficients(L, Q; precision=1)` scales and rounds non-integer QUBO coefficients by `10^precision` for the phase oracle while evaluating returned states against the **original unrounded QUBO** (`QUBOTools.value(state, L, Q, α, β)`) so reported objective values remain exact in the model's units.
+- **Backend & seed attributes**: `GAS.Optimizer` accepts the same local simulator, fake-backend, and IBM Runtime attributes (`IBMBackend`, `IBMFakeBackend`, `IsLocal`, `Aer*`, `TranspilerSeed`, `Channel`, `Instance`, `RandomSeed`, `NumberOfReads`, and `FinalNumberOfReads`) as `QAOA.Optimizer` and `VQE.Optimizer`.
 
 ## Experimental Pauli Correlation Encoding (`PCE.Optimizer`)
-`QiskitOpt.PCE` implements QSplit's Pauli Correlation Encoding (`solver_pce.py`) as an experimental submodule (see [`docs/pce_evaluation.md`](docs/pce_evaluation.md)):
+`QiskitOpt.PCE` implements QSplit's Pauli Correlation Encoding (`solver_pce.py`) natively in Julia as an experimental submodule (see [`docs/pce_evaluation.md`](docs/pce_evaluation.md)):
 - **Qubit compression**: Maps $N$ binary variables onto $m$ qubits ($N \le 3\binom{m}{k}$, so $m = O(\sqrt{N})$ for default `ParityWeight() == 2`) via weight-$k$ $X$, $Y$, and $Z$ Pauli strings (`PCE.pauli_correlation_observables`, `PCE.minimum_pce_qubits`).
-- **True QUBO scoring**: Trains an $m$-qubit `n_local` ansatz with `EstimatorV2` and SciPy COBYLA on the smooth `tanh` surrogate (`PCE.surrogate_loss`), decodes expectation signs via `PCE.decode_expectations`, and **always** scores the returned binary assignment against the original QUBO (`QUBOTools.value(state, L, Q, α, β)`), recording the surrogate loss separately in `metadata["pce"]["surrogate_loss"]`.
+- **True QUBO scoring**: Trains an $m$-qubit `n_local` ansatz with native statevector or 3-basis-circuit ($X^{\otimes m}, Y^{\otimes m}, Z^{\otimes m}$) shot parity evaluation on the smooth `tanh` surrogate (`PCE.surrogate_loss`), decodes expectation signs via `PCE.decode_expectations`, and **always** scores the returned binary assignment against the original QUBO (`QUBOTools.value(state, L, Q, α, β)`), recording the surrogate loss separately in `metadata["pce"]["surrogate_loss"]`.
 - **Opt-in classical polish**: Classical 1-bit-flip local search (`PCE.bitflip_polish`) is **disabled by default** (`PCE.Polish() == false`) so quantum expectation decoding is not conflated with classical hill-climbing. When `MOI.set(model, PCE.Polish(), true)` is set, `metadata["pce"]` records both `raw_quantum_state` / `raw_quantum_value` and `polished_value` / `polish_flips` / `polish_passes`.
 
 ## Initial Parameters
@@ -352,10 +351,10 @@ bits = QiskitOpt.QAOA.count_key_bits("0101")
 ```
 
 ## Reusable QAOA Execution Hooks and Optional IQM Backend Path
-`QiskitOpt.QAOA` exposes a provider-neutral execution and count-decoding seam so fixed-parameter QAOA circuits and non-IBM Qiskit `BackendV2` targets (such as IQM Qiskit backends via `iqm.qiskit_iqm`) can run and produce scored `QUBOTools.SampleSet` results without requiring `qiskit_ibm_runtime` or adding mandatory IQM dependencies to `CondaPkg.toml`.
+`QiskitOpt.QAOA` exposes a provider-neutral execution and count-decoding seam so fixed-parameter QAOA circuits and non-IBM Qiskit `BackendV2` targets (such as IQM Qiskit backends via `iqm.qiskit_iqm`) can run and produce scored `QUBOTools.SampleSet` results without requiring `QiskitIBMRuntime.jl` credentials or mandatory Python dependencies (`PythonCall` is an optional `[weakdeps]` extension `QiskitOptPythonCallExt`).
 
 ### Decoding Measurement Counts into a `SampleSet`
-Use `QAOA.decode_counts_sampleset` when a circuit was executed on an external backend or custom runner and you want a `SampleSet` scored against the original QUBO (preserving variable order, transpiler layout/classical-bit permutation, objective scale/offset, minimization/maximization sense, and read multiplicities):
+Use `QAOA.decode_counts_sampleset` when a circuit was executed on an external backend or custom runner and you want a `SampleSet` scored against the original QUBO (preserving variable order, transpiler layout/classical-bit permutation, objective scale/offset, minimization/maximization sense, and read multiplicities). Both Qiskit MSB-first bitstrings (`"100"`) and native `QiskitIBMRuntime.Samples` / LSB-first `BitVector` shot vectors are supported directly:
 
 ```julia
 # Optional 1-based classical-bit permutation when physical/measured bit order
@@ -369,19 +368,19 @@ sampleset = QiskitOpt.QAOA.decode_counts_sampleset(
 )
 ```
 
-When a transpiled Qiskit circuit is available, pass `transpiled_circuit=transpiled_qc` (or call `QAOA.extract_layout_permutation(transpiled_qc; num_variables=n)`) to derive the virtual-variable-to-classical-bit permutation automatically from `transpiled_qc.layout` and its `measure` instructions.
+When a transpiled `Qiskit.QuantumCircuit` (or `QiskitOpt.TranspileResult`) is available, pass `transpiled_circuit=transpiled_qc` (or call `QAOA.extract_layout_permutation(transpiled_qc; num_variables=n)`) to derive the virtual-variable-to-classical-bit permutation automatically from the transpiler layout and its `measure` instructions.
 
 ### Provider-Neutral Fixed-Parameter Execution and IQM Handoff
-To use IQM Qiskit backends (`iqm.qiskit_iqm`), install `iqm-client[qiskit]` into the active Python environment:
+To use live IQM Qiskit backends (`iqm.qiskit_iqm`) via the optional `QiskitOptPythonCallExt` extension, load `PythonCall` in Julia and install `iqm-client[qiskit]` into the active Python environment:
 
 ```shell
-# Inside the active PythonCall/CondaPkg environment:
 pip install "iqm-client[qiskit]"
 ```
 
 Check optional IQM Python availability with:
 
 ```julia
+using PythonCall, QiskitOpt
 diagnostics = QiskitOpt.check_runtime(; local_backend=true, ibm=false, iqm=true)
 diagnostics.iqm_runtime
 ```
@@ -578,14 +577,12 @@ GitHub release and Zenodo record. For example, the latest archived Zenodo
 record under this concept is
 [10.5281/zenodo.11377340](https://doi.org/10.5281/zenodo.11377340) (`v0.3.0`).
 
-This wrapper depends on the separately maintained upstream
-[Qiskit](https://github.com/Qiskit/qiskit) and
-[Qiskit Optimization](https://github.com/qiskit-community/qiskit-optimization)
-projects. When using their quantum circuits, simulators, or optimization
+This package builds on the native Julia C-API bindings [`Qiskit.jl`](https://github.com/Qiskit/Qiskit.jl) and [`QiskitIBMRuntime.jl`](https://github.com/Qiskit/QiskitIBMRuntime.jl) for upstream
+[Qiskit](https://github.com/Qiskit/qiskit). When using Qiskit quantum circuits, transpilers, or optimization
 algorithms, also cite Javadi-Abhari et al.,
 ["Quantum computing with Qiskit"](https://arxiv.org/abs/2405.08810), and the
 upstream [Qiskit citation guidance](https://github.com/Qiskit/qiskit/blob/main/CITATION.bib).
-The `QiskitOpt.jl` DOI identifies this Julia wrapper; it does not identify or
+The `QiskitOpt.jl` DOI identifies this Julia package; it does not identify or
 archive upstream Qiskit components.
 
 For general discussion or use of the JuliaQUBO ecosystem, cite the
@@ -596,4 +593,4 @@ Release-time archive verification steps are documented in
 
 **Disclaimer:** _The IBM Qiskit Optimization Wrapper for Julia is not officially supported by IBM. If you are a commercial customer interested in official support for Julia from IBM, let them know!_
 
-**Note**: _If you are using [QiskitOpt.jl](https://github.com/JuliaQUBO/QiskitOpt.jl) in your project, we recommend you to include the `.CondaPkg` entry in your `.gitignore` file. The PythonCall module will place a lot of files in this folder when building its Python environment._
+**Note**: _`QiskitOpt.jl` runs natively in Julia via `Qiskit.jl` and `QiskitIBMRuntime.jl` without requiring a Python environment or `.CondaPkg`. `PythonCall` is an optional `[weakdeps]` extension (`QiskitOptPythonCallExt`) loaded only if you explicitly import `PythonCall` (for example, to drive third-party Python `iqm.qiskit_iqm` backends)._

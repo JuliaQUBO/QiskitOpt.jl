@@ -69,11 +69,6 @@ const LARGE_LOCAL_L = [
     42.7483,
 ]
 
-function python_module_loaded(name)
-    sys = QiskitOpt.PythonCall.pyimport("sys")
-    return QiskitOpt.PythonCall.pyconvert(Bool, sys.modules.__contains__(name))
-end
-
 struct MockRuntimeService
     backend::Function
 end
@@ -222,16 +217,17 @@ end
 
 function run_qubodrivers_suite(optimizer_module)
     QUBODrivers.test(optimizer_module.Optimizer) do model
-        MOI.set(model, optimizer_module.MaximumIterations(), 5)
+        if isdefined(optimizer_module, :MaximumIterations)
+            MOI.set(model, optimizer_module.MaximumIterations(), 5)
+        elseif isdefined(optimizer_module, :NumIterations)
+            MOI.set(model, optimizer_module.NumIterations(), 2)
+        end
         MOI.set(model, optimizer_module.NumberOfReads(), 64)
     end
 end
 
-function expected_maxcut_value(statevector, edges)
-    probabilities = QiskitOpt.PythonCall.pyconvert(
-        Dict{String,Float64},
-        statevector.probabilities_dict(),
-    )
+function expected_maxcut_value(qc::QiskitOpt.Qiskit.QuantumCircuit, edges)
+    probabilities = QiskitOpt.statevector_probabilities_dict(qc)
 
     expected_value = 0.0
     for (bitstring, probability) in probabilities
@@ -431,10 +427,10 @@ end
 end
 
 @testset "Runtime diagnostics and lazy imports" begin
-    @test !python_module_loaded("qiskit_ibm_runtime")
-
-    local_diagnostics = QiskitOpt.check_runtime(; local_backend=true, ibm=false, verbose=false)
+    local_diagnostics = QiskitOpt.check_runtime(; local_backend=true, require_aer=false, ibm=false, verbose=false)
     @test local_diagnostics.ok
+    @test local_diagnostics.packages["Qiskit"].ok
+    @test local_diagnostics.packages["QiskitIBMRuntime"].ok
     @test local_diagnostics.packages["qiskit"].ok
     @test local_diagnostics.packages["qiskit_aer"].ok
     @test local_diagnostics.packages["qiskit_optimization"].ok
@@ -448,8 +444,6 @@ end
     @test !isnothing(local_diagnostics.local_backend)
     @test local_diagnostics.local_backend.ok
     @test occursin("qiskit_ibm_runtime", local_diagnostics.local_backend.message)
-    @test !python_module_loaded("qiskit_ibm_runtime")
-    @test !python_module_loaded("iqm.qiskit_iqm")
 
     missing_error = try
         QiskitOpt._import_python_module(
@@ -538,7 +532,7 @@ end
     )
     @test !isnothing(QiskitOpt.local_aer_backend(smoke_config))
     @test QiskitOpt.backend_version(QiskitOpt.default_local_backend()) ==
-          QiskitOpt._python_module_version(QiskitOpt.qiskit_aer())
+          something(QiskitOpt._module_version(QiskitOpt.Qiskit), "0.6.0")
     @test QiskitOpt.backend_version(QiskitOpt.default_local_backend()) != "2"
 
     metadata = QiskitOpt.empty_metadata(
@@ -657,31 +651,32 @@ end
     @test_throws ArgumentError QAOA.interpolated_initial_parameters([1.0, 2.0, 3.0])
     @test_throws ArgumentError QAOA.interpolated_initial_parameters(Any[1.0, "not-real"])
 
-    qaoa_cost_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
-        ("ZI", 1.0),
-        ("IZ", 1.0),
-        ("ZZ", 1.0),
-    ])
+    qaoa_cost_operator = QiskitOpt.IsingHamiltonian(
+        2,
+        0.0,
+        [1.0, 1.0],
+        Dict((1, 2) => 1.0),
+    )
+    qaoa_sparse_obs = QiskitOpt.to_sparse_observable(qaoa_cost_operator)
     for number_of_layers in 1:3
         live_names = QiskitOpt.qiskit_parameter_names(
-            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
-                qaoa_cost_operator,
+            QiskitOpt.qaoa_ansatz(
+                qaoa_cost_operator;
                 reps=number_of_layers,
             ),
         )
         @test QAOA.parameter_names(2; number_of_layers=number_of_layers) == live_names
         @test QAOA.parameter_names(qaoa_cost_operator; number_of_layers=number_of_layers) == live_names
+        @test QAOA.parameter_names(qaoa_sparse_obs; number_of_layers=number_of_layers) == live_names
     end
 
     k4_edges = [(1, 2), (2, 3), (3, 4), (4, 1), (1, 3), (2, 4)]
-    k4_maxcut_operator = QiskitOpt.qiskit().quantum_info.SparsePauliOp.from_list([
-        ("IIZZ", 0.5),
-        ("IZIZ", 0.5),
-        ("ZIIZ", 0.5),
-        ("IZZI", 0.5),
-        ("ZIZI", 0.5),
-        ("ZZII", 0.5),
-    ])
+    k4_maxcut_operator = QiskitOpt.IsingHamiltonian(
+        4,
+        0.0,
+        zeros(4),
+        Dict(e => 0.5 for e in k4_edges),
+    )
     for number_of_layers in 1:3
         negative_gamma_parameters = QAOA.fixed_angle_initial_parameters(
             number_of_layers=number_of_layers,
@@ -691,20 +686,18 @@ end
             number_of_layers=number_of_layers,
             gamma_sign=1,
         )
-        negative_gamma_state = QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(
-            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
-                k4_maxcut_operator,
-                reps=number_of_layers,
-            ).assign_parameters(negative_gamma_parameters),
+        negative_gamma_qc = QiskitOpt.build_qaoa_circuit(
+            k4_maxcut_operator,
+            negative_gamma_parameters;
+            reps=number_of_layers,
         )
-        positive_gamma_state = QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(
-            QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
-                k4_maxcut_operator,
-                reps=number_of_layers,
-            ).assign_parameters(positive_gamma_parameters),
+        positive_gamma_qc = QiskitOpt.build_qaoa_circuit(
+            k4_maxcut_operator,
+            positive_gamma_parameters;
+            reps=number_of_layers,
         )
-        negative_gamma_ratio = expected_maxcut_value(negative_gamma_state, k4_edges) / 4
-        positive_gamma_ratio = expected_maxcut_value(positive_gamma_state, k4_edges) / 4
+        negative_gamma_ratio = expected_maxcut_value(negative_gamma_qc, k4_edges) / 4
+        positive_gamma_ratio = expected_maxcut_value(positive_gamma_qc, k4_edges) / 4
         @test negative_gamma_ratio >= QAOA.fixed_angle_guarantee(number_of_layers=number_of_layers)
         @test negative_gamma_ratio > positive_gamma_ratio
     end
@@ -941,31 +934,27 @@ end
         end
     end
 
-    python_failing_pass_manager_factory = (backend; optimization_level=3, seed_transpiler=nothing) -> (
-        run = inner_circuit -> QiskitOpt.qiskit().transpile(
-            inner_circuit;
-            backend="not-a-backend",
-        ),
+    arg_failing_pass_manager_factory = (backend; optimization_level=3, seed_transpiler=nothing) -> (
+        run = _ -> throw(ArgumentError("invalid target backend specification")),
     )
-    python_failed_audit = QAOA.resource_audit(
+    arg_failed_audit = QAOA.resource_audit(
         circuit;
         fixed_metadata=metadata,
         backend=QiskitOpt.default_local_backend(),
-        pass_manager_factory=python_failing_pass_manager_factory,
+        pass_manager_factory=arg_failing_pass_manager_factory,
     )
-    @test python_failed_audit.transpiled_circuit === nothing
-    @test python_failed_audit.metadata["status"] == "failed_transpilation"
-    python_failure = python_failed_audit.metadata["transpilation"]["failure"]
-    @test python_failure["exception_type"] == "builtins.AttributeError"
-    @test occursin("AttributeError", python_failure["message"])
-    @test !occursin("PyException", python_failure["exception_type"])
+    @test arg_failed_audit.transpiled_circuit === nothing
+    @test arg_failed_audit.metadata["status"] == "failed_transpilation"
+    arg_failure = arg_failed_audit.metadata["transpilation"]["failure"]
+    @test arg_failure["exception_type"] == "ArgumentError"
+    @test occursin("invalid target backend specification", arg_failure["message"])
 
     @test_throws ArgumentError QAOA.resource_audit(circuit; optimization_level=4)
 
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="", shots=1024)
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(circuit; backend="ibm_fez", shots=0)
     @test_throws ArgumentError QAOA.ibm_runtime_handoff(
-        circuit.remove_final_measurements(inplace=false);
+        QiskitOpt.remove_final_measurements(circuit);
         backend="ibm_fez",
         shots=1024,
     )
@@ -987,20 +976,15 @@ end
     @test max_metadata["objective"]["sense"] == "max"
     @test max_metadata["objective"]["qiskit_minimization_sign"] == -1
 
-    unmeasured = circuit.remove_final_measurements(inplace=false)
-    exported_probabilities = QiskitOpt.PythonCall.pyconvert(
-        Dict{String,Float64},
-        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(unmeasured).probabilities_dict(),
-    )
+    unmeasured = QiskitOpt.remove_final_measurements(circuit)
+    exported_probabilities = QiskitOpt.statevector_probabilities_dict(unmeasured)
 
-    reference = QiskitOpt.qiskit().circuit.library.QAOAAnsatz(
-        QiskitOpt.quadratic_program(qaoa_sampler)[0],
-        reps=1,
-    ).assign_parameters(QiskitOpt.numpy().array(parameters))
-    reference_probabilities = QiskitOpt.PythonCall.pyconvert(
-        Dict{String,Float64},
-        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(reference).probabilities_dict(),
+    reference = QiskitOpt.build_qaoa_circuit(
+        QiskitOpt.quadratic_program(qaoa_sampler)[3],
+        1,
+        parameters,
     )
+    reference_probabilities = QiskitOpt.statevector_probabilities_dict(reference)
 
     @test Set(keys(exported_probabilities)) == Set(keys(reference_probabilities))
     for key in keys(reference_probabilities)
@@ -1013,10 +997,7 @@ end
         reps=1,
         measure=false,
     )
-    uniform_probabilities = QiskitOpt.PythonCall.pyconvert(
-        Dict{String,Float64},
-        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(uniform_circuit).probabilities_dict(),
-    )
+    uniform_probabilities = QiskitOpt.statevector_probabilities_dict(uniform_circuit)
     @test uniform_metadata["measurement"]["enabled"] == false
     @test uniform_metadata["circuit"]["num_clbits"] == 0
     @test Set(keys(uniform_probabilities)) == Set(["00", "01", "10", "11"])
@@ -1031,10 +1012,7 @@ end
         parameter_order=:gamma_then_beta,
         measure=false,
     )
-    reordered_probabilities = QiskitOpt.PythonCall.pyconvert(
-        Dict{String,Float64},
-        QiskitOpt.qiskit().quantum_info.Statevector.from_instruction(reordered_circuit).probabilities_dict(),
-    )
+    reordered_probabilities = QiskitOpt.statevector_probabilities_dict(reordered_circuit)
     @test reordered_metadata["parameters"]["input_order"] == "gamma_then_beta"
     @test reordered_metadata["parameters"]["values_order"] == "qiskit_order"
     @test reordered_metadata["parameters"]["values_aligned_to"] == "parameter_names"
@@ -1326,7 +1304,7 @@ end
         previous_builder = QiskitOpt._runtime_service_builder[]
         QiskitOpt._runtime_service_builder[] = (; channel, token, instance) -> begin
             push!(runtime_calls, (channel=channel, token=token, instance=instance))
-            return MockRuntimeService(_ -> QiskitOpt.qiskit_ibm_runtime.fake_provider.FakeManilaV2())
+            return MockRuntimeService(_ -> QiskitOpt.fake_backend("fake_manila"))
         end
 
         try
@@ -1394,17 +1372,19 @@ end
     @test_throws ArgumentError QAOA.count_key_bits("100"; layout_permutation=[4, 1, 2])
 
     # 2. Automatic layout permutation extraction from Qiskit transpiled circuits
-    q = QiskitOpt.qiskit()
-    base_qc = q.QuantumCircuit(3)
-    base_qc.x(0)
+    base_qc = QiskitOpt.Qiskit.QuantumCircuit(3, 3)
+    QiskitOpt.Qiskit.x!(base_qc, 1)
 
-    measured_first = base_qc.copy()
-    measured_first.measure_all()
-    transpiled_measured_first = q.transpile(measured_first, initial_layout=[2, 0, 1])
+    measured_first = copy(base_qc)
+    QiskitOpt.measure_all!(measured_first)
+    transpiled_measured_first = QiskitOpt.native_transpile(measured_first)
     @test QAOA.extract_layout_permutation(transpiled_measured_first; num_variables=3) == [1, 2, 3]
+    @test QAOA.extract_layout_permutation(transpiled_measured_first.layout; num_variables=3) == [1, 2, 3]
 
-    transpiled_unmeasured_first = q.transpile(base_qc, initial_layout=[2, 0, 1])
-    transpiled_unmeasured_first.measure_all()
+    transpiled_unmeasured_first = copy(base_qc)
+    QiskitOpt.Qiskit.measure!(transpiled_unmeasured_first, 1, 3)
+    QiskitOpt.Qiskit.measure!(transpiled_unmeasured_first, 2, 1)
+    QiskitOpt.Qiskit.measure!(transpiled_unmeasured_first, 3, 2)
     @test QAOA.extract_layout_permutation(transpiled_unmeasured_first; num_variables=3) == [3, 1, 2]
 
     # 3. SampleSet decoding with non-trivial permutation, scale, offset, and Min/Max sense
@@ -1716,7 +1696,7 @@ end
     @test_throws ArgumentError GAS.estimate_num_value_qubits([1.0], zeros(2, 2))
 
     qp_direct = QiskitOpt.build_quadratic_program(2, [-1, 2], [0 -2; 0 0]; sense=MOI.MIN_SENSE)
-    @test QiskitOpt.PythonCall.pyconvert(Int, qp_direct.get_num_binary_vars()) == 2
+    @test qp_direct.get_num_binary_vars() == 2
 
     previous_builder = QiskitOpt._runtime_service_builder[]
     QiskitOpt._runtime_service_builder[] = (; kwargs...) -> error("runtime service invoked")
@@ -1967,6 +1947,324 @@ end
     @test occursin("Go / No-Go Architectural Decision", eval_doc)
     @test occursin("QiskitOpt.PCE", eval_doc)
     @test occursin("QUBOTools.value", eval_doc)
+end
+
+@testset "Native Ising/SparseObservable lowering, GATE_TABLE simulator, and QiskitIBMRuntime LSB Samples" begin
+    # 1. Exact QUBO -> Ising lowering and Qiskit.SparseObservable round-trip (Slice 1)
+    asym_Q = [
+        -1.25  2.5  0.0 -0.75
+         0.5  -0.5  1.5  0.0
+         0.0   0.0  0.0  0.0
+        -0.25  0.0  0.0  1.0
+    ]
+    asym_L = [0.75, -1.5, 0.0, 0.25] # qubit 3 is an isolated zero-coefficient variable
+    for (sense, sign) in ((MOI.MIN_SENSE, 1.0), (MOI.MAX_SENSE, -1.0))
+        h = QiskitOpt.qubo_to_ising(4, asym_L, asym_Q; sense=sense)
+        @test h.num_qubits == 4
+        obs = QiskitOpt.to_sparse_observable(h)
+        @test QiskitOpt._LibQiskit.qk_obs_num_qubits(obs.ptr) == 4
+        parsed = QiskitOpt.parse_sparse_observable(obs; offset=h.offset)
+        @test parsed.num_qubits == 4
+        for mask in 0:15
+            x = Int[(mask >> (i - 1)) & 1 for i in 1:4]
+            expected = sign * (x' * asym_Q * x + asym_L' * x)
+            @test QiskitOpt.evaluate_ising_bitstring(h, x) ≈ expected
+            @test QiskitOpt.evaluate_ising_bitstring(parsed, x) ≈ expected
+        end
+    end
+
+    # 2. Full Qiskit.GATE_TABLE coverage, MPS vs statevector agreement, and unitary decomposition (Slice 2)
+    qc_gates = QiskitOpt.Qiskit.QuantumCircuit(4, 4)
+    for (_, gate_op, n_q, n_p) in QiskitOpt.Qiskit.GATE_TABLE
+        qubits = collect(1:n_q)
+        params = Float64[0.15 * j for j in 1:n_p]
+        QiskitOpt.Qiskit.qk_circuit_gate(qc_gates, gate_op, qubits, params)
+    end
+    U_custom = ComplexF64[1/sqrt(2) 1/sqrt(2); 1/sqrt(2) -1/sqrt(2)]
+    QiskitOpt.Qiskit.unitary!(qc_gates, U_custom, [1])
+    QiskitOpt.Qiskit.barrier!(qc_gates, 1, 2, 3, 4)
+
+    psi_sv = QiskitOpt.simulate_statevector(qc_gates)
+    @test sum(abs2, psi_sv) ≈ 1.0
+    mps = QiskitOpt.simulate_mps(qc_gates; max_bond_dimension=64)
+    for q in 1:4, p in (:X, :Y, :Z)
+        term = QiskitOpt.PauliTerm(1.0, [q], [p])
+        @test QiskitOpt._mps_pauli_term_expectation(mps, term) ≈
+              QiskitOpt._statevector_pauli_term_expectation(psi_sv, term) atol=1.0e-10
+    end
+    for q1 in 1:3, q2 in (q1 + 1):4, p in (:X, :Y, :Z)
+        term = QiskitOpt.PauliTerm(1.0, [q1, q2], [p, p])
+        @test QiskitOpt._mps_pauli_term_expectation(mps, term) ≈
+              QiskitOpt._statevector_pauli_term_expectation(psi_sv, term) atol=1.0e-10
+    end
+
+    # Derivative-free optimizer edge cases (d == 0 and max_iter == 1)
+    res_d0 = QiskitOpt.minimize_objective(_ -> 3.5, Float64[]; max_iter=10)
+    @test res_d0.nit == 0 && res_d0.nfev == 1 && res_d0.fun == 3.5
+    res_iter1 = QiskitOpt.minimize_objective(x -> sum(abs2, x), [1.0, -2.0]; max_iter=1)
+    @test res_iter1.nit == 1 && res_iter1.nfev == 1 && res_iter1.fun == 5.0
+
+    # 3. Direct LSB-first QiskitIBMRuntime.Samples / BitVector decoding & cloud execution (Slice 4)
+    # In QiskitIBMRuntime.Samples, shot[j] is classical bit c_{j-1} (LSB-first: shot[1] == x_1).
+    lsb_shots = BitVector[
+        BitVector([true, false, false]),
+        BitVector([true, false, false]),
+        BitVector([false, true, true]),
+    ]
+    model_lsb, _ = build_model(QAOA.Optimizer; Q=TEST_Q)
+    decoded_lsb = QAOA.decode_counts_sampleset(model_lsb, lsb_shots; backend_name="ibm_fez", execution_mode="cloud")
+    by_state_lsb = Dict(QUBOTools.state(s) => QUBOTools.reads(s) for s in decoded_lsb)
+    @test by_state_lsb[[1, 0, 0]] == 2
+    @test by_state_lsb[[0, 1, 1]] == 1
+
+    # With layout_permutation = [3, 1, 2], x_1 reads shot[3], x_2 reads shot[1], x_3 reads shot[2]:
+    # BitVector([true, false, false]) -> [shot[3], shot[1], shot[2]] = [0, 1, 0]
+    decoded_perm_lsb = QAOA.decode_counts_sampleset(
+        model_lsb,
+        lsb_shots;
+        layout_permutation=[3, 1, 2],
+        backend_name="ibm_fez",
+        execution_mode="cloud",
+    )
+    by_state_perm_lsb = Dict(QUBOTools.state(s) => QUBOTools.reads(s) for s in decoded_perm_lsb)
+    @test by_state_perm_lsb[[0, 1, 0]] == 2
+    @test by_state_perm_lsb[[1, 0, 1]] == 1
+
+    # Mocked live ibm_runtime_handoff (dry_run=false) and cloud QAOA/VQE solve
+    prev_service_builder = QiskitOpt._runtime_service_builder[]
+    submitted_jobs = Int[]
+    mock_cloud_backend = (
+        name = "ibm_fez",
+        version = "0.3.2",
+        target = QiskitOpt.default_local_target(3),
+        submit_sampler = (qc, shots) -> begin
+            push!(submitted_jobs, shots)
+            return (
+                job_id = () -> nothing,
+                status = () -> "Completed",
+            )
+        end,
+        run = (qc; shots=16) -> begin
+            push!(submitted_jobs, shots)
+            shots_vec = QiskitOpt.sample_bitvectors_from_circuit(qc; shots=shots, seed=1234)
+            return (
+                job = (job_id = () -> nothing, status = () -> "Completed"),
+                samples = shots_vec,
+                counts = shots_vec,
+            )
+        end,
+    )
+    QiskitOpt._runtime_service_builder[] = (; kwargs...) -> (
+        backend = name -> mock_cloud_backend,
+    )
+    try
+        qc_handoff, meta_handoff = QAOA.fixed_parameter_circuit(
+            model_lsb;
+            parameters=[0.2, -0.3],
+            reps=1,
+            measure=true,
+        )
+        live_ibm = QAOA.ibm_runtime_handoff(
+            qc_handoff;
+            fixed_metadata=meta_handoff,
+            backend="ibm_fez",
+            shots=128,
+            dry_run=false,
+        )
+        @test live_ibm.metadata["runtime_handoff"]["status"] == "submitted"
+        @test live_ibm.metadata["runtime_handoff"]["job"]["id"] === nothing
+        @test live_ibm.metadata["runtime_handoff"]["job"]["status"] == "Completed"
+        @test live_ibm.transpiled_circuit isa QiskitOpt.Qiskit.QuantumCircuit
+        @test submitted_jobs[end] == 128
+
+        for (opt_factory, opt_mod) in ((QAOA.Optimizer, QAOA), (VQE.Optimizer, VQE))
+            cloud_model, cloud_x = build_model(opt_factory)
+            MOI.set(cloud_model, opt_mod.IBMBackend(), "ibm_fez")
+            MOI.set(cloud_model, opt_mod.IsLocal(), false)
+            MOI.set(cloud_model, opt_mod.MaximumIterations(), 2)
+            MOI.set(cloud_model, opt_mod.NumberOfReads(), 16)
+            MOI.optimize!(cloud_model)
+            assert_solution_consistency(cloud_model, cloud_x)
+            cloud_meta = QUBOTools.metadata(QUBOTools.solution(MOI.get(cloud_model, MOI.RawSolver())))
+            @test cloud_meta["execution"]["mode"] == "cloud"
+            @test cloud_meta["status"] == "cloud_solved"
+        end
+    finally
+        QiskitOpt._runtime_service_builder[] = prev_service_builder
+    end
+
+    # 4. Exact small-instance oracle comparison against QUBODrivers.ExactSampler.Optimizer
+    exact_model, exact_x = build_model(QUBODrivers.ExactSampler.Optimizer; Q=TEST_Q)
+    MOI.optimize!(exact_model)
+    exact_opt_val = MOI.get(exact_model, MOI.ObjectiveValue(1))
+    @test exact_opt_val == -1.0
+
+    for (opt_factory, opt_mod) in (
+        (QAOA.Optimizer, QAOA),
+        (VQE.Optimizer, VQE),
+        (GAS.Optimizer, GAS),
+        (PCE.Optimizer, PCE),
+    )
+        m_test, _ = build_model(opt_factory; Q=TEST_Q)
+        if opt_mod === GAS
+            MOI.set(m_test, GAS.NumIterations(), 3)
+        else
+            MOI.set(m_test, opt_mod.MaximumIterations(), 5)
+        end
+        MOI.set(m_test, opt_mod.NumberOfReads(), 64)
+        MOI.set(m_test, QUBODrivers.RandomSeed(), 73001)
+        if opt_mod === PCE
+            MOI.set(m_test, PCE.Polish(), true)
+        end
+        MOI.optimize!(m_test)
+        @test MOI.get(m_test, MOI.ObjectiveValue(1)) ≈ exact_opt_val
+    end
+
+    # 5. Sparse 5-qubit target where only physical qubits (4, 5) are coupled (P1-1, P1-3)
+    sparse_5q_target = QiskitOpt.Qiskit.Target(5)
+    for gsym in (:rz, :sx, :x, :id)
+        idx = findfirst(t -> t[1] === gsym, QiskitOpt.Qiskit.GATE_TABLE)
+        _, gate_op, _, _ = QiskitOpt.Qiskit.GATE_TABLE[idx]
+        entry = QiskitOpt.Qiskit.target_entry_gate(gate_op)
+        for q in UInt32(0):UInt32(4)
+            q_arr = UInt32[q]
+            GC.@preserve q_arr QiskitOpt._LibQiskit.qk_target_entry_add_property(entry.ptr, pointer(q_arr), UInt32(1), 0.0, 0.0)
+        end
+        QiskitOpt.Qiskit.qk_target_add_instruction(sparse_5q_target, entry)
+    end
+    cx_idx = findfirst(t -> t[1] === :cx, QiskitOpt.Qiskit.GATE_TABLE)
+    _, cx_op, _, _ = QiskitOpt.Qiskit.GATE_TABLE[cx_idx]
+    cx_entry = QiskitOpt.Qiskit.target_entry_gate(cx_op)
+    for pair in (UInt32[3, 4], UInt32[4, 3])
+        GC.@preserve pair QiskitOpt._LibQiskit.qk_target_entry_add_property(cx_entry.ptr, pointer(pair), UInt32(2), 0.0, 0.0)
+    end
+    QiskitOpt.Qiskit.qk_target_add_instruction(sparse_5q_target, cx_entry)
+    meas_5q = QiskitOpt.Qiskit.target_entry_measure()
+    for q in UInt32(0):UInt32(4)
+        q_arr = UInt32[q]
+        GC.@preserve q_arr QiskitOpt._LibQiskit.qk_target_entry_add_property(meas_5q.ptr, pointer(q_arr), UInt32(1), 0.0, 0.0)
+    end
+    QiskitOpt.Qiskit.qk_target_add_instruction(sparse_5q_target, meas_5q)
+
+    sparse_5q_backend = QiskitOpt.NativeFakeBackend("sparse_5q_test", "1.0.0", 5, sparse_5q_target)
+    for (opt_factory, opt_mod) in (
+        (QAOA.Optimizer, QAOA),
+        (VQE.Optimizer, VQE),
+        (PCE.Optimizer, PCE),
+    )
+        m_5q, x_5q = build_model(opt_factory; Q = [-1.0 2.0; 0.0 -1.0])
+        MOI.set(m_5q, opt_mod.IBMFakeBackend(), (; kwargs...) -> sparse_5q_backend)
+        MOI.set(m_5q, opt_mod.MaximumIterations(), 2)
+        MOI.set(m_5q, opt_mod.NumberOfReads(), 32)
+        MOI.set(m_5q, QUBODrivers.RandomSeed(), 42)
+        MOI.optimize!(m_5q)
+        assert_solution_consistency(m_5q, x_5q; Q = [-1.0 2.0; 0.0 -1.0])
+
+        # Also test non-local / cloud path with the sparse 5-qubit target
+        cloud_5q_backend = (
+            name = "sparse_5q_cloud",
+            version = "2.0.0",
+            num_qubits = 5,
+            target = sparse_5q_target,
+            run = (qc; shots = 32) -> begin
+                # Verify only ISA instructions + measure are present and only active clbits are measured
+                @test qc.num_qubits == 5
+                @test qc.num_clbits <= 2
+                for inst in qc.data
+                    @test !(inst.name in ("h", "rzz", "rx", "ry"))
+                end
+                counts = QiskitOpt.sample_from_circuit(qc; shots = shots, seed = 42)
+                return (
+                    job = (job_id = () -> nothing, status = () -> "Completed"),
+                    result = () -> (get_counts = () -> counts, counts = counts),
+                    get_counts = () -> counts,
+                    counts = counts,
+                )
+            end,
+        )
+        prev_sb = QiskitOpt._runtime_service_builder[]
+        QiskitOpt._runtime_service_builder[] = (; kwargs...) -> (
+            backend = _ -> cloud_5q_backend,
+        )
+        try
+            m_cloud_5q, x_cloud_5q = build_model(opt_factory; Q = [-1.0 2.0; 0.0 -1.0])
+            MOI.set(m_cloud_5q, opt_mod.IBMBackend(), "sparse_5q_cloud")
+            MOI.set(m_cloud_5q, opt_mod.IsLocal(), false)
+            MOI.set(m_cloud_5q, opt_mod.MaximumIterations(), 2)
+            MOI.set(m_cloud_5q, opt_mod.NumberOfReads(), 32)
+            MOI.set(m_cloud_5q, QUBODrivers.RandomSeed(), 42)
+            MOI.optimize!(m_cloud_5q)
+            assert_solution_consistency(m_cloud_5q, x_cloud_5q; Q = [-1.0 2.0; 0.0 -1.0])
+        finally
+            QiskitOpt._runtime_service_builder[] = prev_sb
+        end
+    end
+
+    # 6. GAS multi-controlled phase diffuser for n=4 and n=5 key qubits (P1-2)
+    gas_qc_4 = QiskitOpt.build_gas_circuit(4, fill(-1.0, 4), zeros(4, 4), -3.0; num_grover_iterations = 3)
+    psi_gas_4 = QiskitOpt.simulate_statevector(gas_qc_4)
+    prob_1111 = sum(abs2(psi_gas_4[idx]) for idx in 1:length(psi_gas_4) if ((idx - 1) & 0x0f) == 0x0f)
+    @test prob_1111 > 0.95
+
+    gas_qc_5 = QiskitOpt.build_gas_circuit(5, fill(-1.0, 5), zeros(5, 5), -4.0; num_grover_iterations = 4)
+    psi_gas_5 = QiskitOpt.simulate_statevector(gas_qc_5)
+    prob_11111 = sum(abs2(psi_gas_5[idx]) for idx in 1:length(psi_gas_5) if ((idx - 1) & 0x1f) == 0x1f)
+    @test prob_11111 > 0.95
+
+    # 7. NativeAnsatz(:efficient_su2, ...) and NativeAnsatz(:n_local, ...) / build_n_local_circuit (P1-4)
+    su2_sym = QiskitOpt.NativeAnsatz(:efficient_su2, 3; reps = 3)
+    @test QiskitOpt.num_parameters(su2_sym) == 24
+    nloc_sym = QiskitOpt.NativeAnsatz(:n_local, 3; rotation_blocks = [:ry], entanglement_blocks = :cz, reps = 2)
+    @test QiskitOpt.num_parameters(nloc_sym) == 9
+    nloc_qc = QiskitOpt.build_n_local_circuit(3, collect(1:9); rotation_blocks = [:ry], entanglement_blocks = :cz, reps = 2)
+    @test nloc_qc.num_qubits == 3
+    @test_throws ArgumentError QiskitOpt.NativeAnsatz(:unknown_ansatz, 3)
+
+    # 8. MPS rcccx, reset, non-diagonal shot noise, PCE MPS forwarding, and Ising identity term offset (P2-1, P3-1)
+    qc_rcccx = QiskitOpt.Qiskit.QuantumCircuit(4)
+    for q in 1:4
+        QiskitOpt.Qiskit.x!(qc_rcccx, q)
+    end
+    QiskitOpt.Qiskit.rcccx!(qc_rcccx, 1, 2, 3, 4)
+    mps_rcccx = QiskitOpt.simulate_mps(qc_rcccx)
+    sv_rcccx = QiskitOpt.simulate_statevector(qc_rcccx)
+    for q in 1:4
+        term_z = QiskitOpt.PauliTerm(1.0, [q], [:Z])
+        @test QiskitOpt._mps_pauli_term_expectation(mps_rcccx, term_z) ≈
+              QiskitOpt._statevector_pauli_term_expectation(sv_rcccx, term_z) atol=1e-10
+    end
+
+    qc_rst = QiskitOpt.Qiskit.QuantumCircuit(2)
+    QiskitOpt.Qiskit.x!(qc_rst, 1)
+    QiskitOpt.Qiskit.reset!(qc_rst, 1)
+    mps_rst = QiskitOpt.simulate_mps(qc_rst)
+    @test QiskitOpt._mps_pauli_term_expectation(mps_rst, QiskitOpt.PauliTerm(1.0, [1], [:Z])) ≈ 1.0 atol=1e-10
+
+    qc_plus = QiskitOpt.Qiskit.QuantumCircuit(2)
+    QiskitOpt.Qiskit.h!(qc_plus, 1)
+    QiskitOpt.Qiskit.h!(qc_plus, 2)
+    h_x = QiskitOpt.IsingHamiltonian(
+        2,
+        0.0,
+        zeros(2),
+        Dict{Tuple{Int,Int},Float64}(),
+        [QiskitOpt.PauliTerm(1.0, [1], [:X])],
+    )
+    ev_mps_x = QiskitOpt.estimate_expectation(qc_plus, h_x; shots = 64, seed = 42, max_bond_dimension = 4)
+    @test isapprox(ev_mps_x, 1.0; atol = 1e-8)
+
+    evs_mps_pce = QiskitOpt.estimate_pauli_expectations(qc_plus, ["XI", "IX"]; shots = nothing, max_bond_dimension = 4)
+    @test isapprox(evs_mps_pce, [1.0, 1.0]; atol = 1e-8)
+
+    h_id = QiskitOpt.IsingHamiltonian(
+        2,
+        2.0,
+        zeros(2),
+        Dict{Tuple{Int,Int},Float64}(),
+        [QiskitOpt.PauliTerm(1.5, Int[], Symbol[]), QiskitOpt.PauliTerm(0.5, [1], [:Z])],
+    )
+    @test h_id.offset ≈ 3.5
+    @test length(h_id.terms) == 1
 end
 
 @testset "QUBODrivers compatibility suite" begin

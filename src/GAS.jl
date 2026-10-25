@@ -1,21 +1,17 @@
 module GAS
 
-using PythonCall: pybuiltins, pyconvert, pyhasattr, pyis, pylen
 using ..QiskitOpt:
     AerBackendConfig,
     backend_name,
     backend_version,
+    build_gas_circuit,
     build_quadratic_program,
     configured_execution_backend,
     default_local_backend,
     effective_seed,
     empty_metadata,
+    gas_grover_search,
     preset_pass_manager,
-    python_float_property,
-    python_float_vector,
-    qiskit_ibm_runtime,
-    qiskit_optimization_algorithms,
-    qiskit_optimization_utils,
     runtime_channel,
     runtime_instance
 
@@ -50,6 +46,7 @@ QUBODrivers.@setup Optimizer begin
 end
 
 const MaximumIterations = NumIterations
+const NumQubits = NumValueQubits
 
 QUBODrivers.honors_final_reads(::Type{<:Optimizer}) = true
 
@@ -155,82 +152,6 @@ function estimate_num_value_qubits(
 
     bound = ceil(Int, max(pos_sum, -neg_sum))
     return max(2, ceil(Int, log2(bound + 1)) + 1)
-end
-
-function _operation_evaluations(result)
-    try
-        if pyhasattr(result, "operation_counts")
-            counts = getproperty(result, :operation_counts)
-            !pyis(counts, pybuiltins.None) && return Int(pylen(counts))
-        end
-    catch
-    end
-    return nothing
-end
-
-function _threshold_value(result)
-    return python_float_property(result, :threshold)
-end
-
-function _extract_state_counts(result, n::Integer, total_reads::Integer)
-    ordered_states = Vector{Int}[]
-    state_probs = Dict{Vector{Int}, Float64}()
-
-    if pyhasattr(result, "samples")
-        py_samples = getproperty(result, :samples)
-        if !pyis(py_samples, pybuiltins.None)
-            for sample in py_samples
-                state = Int[round(Int, v) for v in python_float_vector(getproperty(sample, :x))]
-                length(state) == n || continue
-                prob = max(0.0, pyconvert(Float64, getproperty(sample, :probability)))
-                if !haskey(state_probs, state)
-                    push!(ordered_states, state)
-                    state_probs[state] = prob
-                else
-                    state_probs[state] += prob
-                end
-            end
-        end
-    end
-
-    opt_state = if pyhasattr(result, "x") && !pyis(getproperty(result, :x), pybuiltins.None)
-        candidate = Int[round(Int, v) for v in python_float_vector(getproperty(result, :x))]
-        length(candidate) == n ? candidate : zeros(Int, n)
-    else
-        zeros(Int, n)
-    end
-
-    if !haskey(state_probs, opt_state)
-        pushfirst!(ordered_states, opt_state)
-        state_probs[opt_state] = isempty(state_probs) ? 1.0 : 0.0
-    end
-
-    if length(ordered_states) == 1
-        return Pair{Vector{Int}, Int}[ordered_states[1] => total_reads]
-    end
-
-    counts = Dict{Vector{Int}, Int}()
-    for state in ordered_states
-        counts[state] = max(1, round(Int, state_probs[state] * total_reads))
-    end
-
-    current_total = sum(values(counts))
-    diff = total_reads - current_total
-    if diff > 0
-        counts[opt_state] += diff
-    elseif diff < 0
-        # Reduce counts starting from states with the largest read counts while keeping each >= 1.
-        for state in sort(ordered_states; by = s -> counts[s], rev = true)
-            diff == 0 && break
-            reducible = counts[state] - 1
-            reducible <= 0 && continue
-            delta = min(reducible, -diff)
-            counts[state] -= delta
-            diff += delta
-        end
-    end
-
-    return Pair{Vector{Int}, Int}[state => counts[state] for state in ordered_states]
 end
 
 function QUBODrivers.sample(sampler::Optimizer{T}) where {T}
@@ -353,32 +274,22 @@ function retrieve(
         return metadata
     end
 
-    qp = build_quadratic_program(n, integerized.L, integerized.Q; sense = MOI.MIN_SENSE)
-    pass_manager = preset_pass_manager(
-        backend;
-        optimization_level = 3,
-        seed_transpiler = aer_config.seed_transpiler,
+    gas_res = gas_grover_search(
+        n,
+        integerized.L,
+        integerized.Q;
+        num_value_qubits = resolved_num_value_qubits,
+        max_iter = max_iter,
+        shots = final_num_reads,
+        seed_simulator = aer_config.seed_simulator,
+        seed_optimizer = seed_optimizer,
     )
-    qiskit_sampler = qiskit_ibm_runtime().SamplerV2(mode = backend)
-    qiskit_sampler.options.default_shots = final_num_reads
 
-    if !isnothing(seed_optimizer)
-        qiskit_optimization_utils().algorithm_globals.random_seed = seed_optimizer
-    end
-
-    grover_optimizer = qiskit_optimization_algorithms().GroverOptimizer(
-        resolved_num_value_qubits;
-        num_iterations = max_iter,
-        sampler = qiskit_sampler,
-        pass_manager = pass_manager,
-    )
-    result = grover_optimizer.solve(qp)
-
-    state_counts = _extract_state_counts(result, n, final_num_reads)
+    state_counts = gas_res.state_counts
     callback(state_counts)
 
-    evaluations = _operation_evaluations(result)
-    threshold_value = _threshold_value(result)
+    evaluations = gas_res.evaluations
+    threshold_value = gas_res.threshold
 
     metadata = empty_metadata(
         "GAS",
