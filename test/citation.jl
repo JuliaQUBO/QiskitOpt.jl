@@ -11,7 +11,7 @@ include(joinpath(@__DIR__, "..", "scripts", "verify_zenodo_release.jl"))
     workflow = read_text(joinpath(repo_root, ".github", "workflows", "zenodo.yml"))
 
     concept_doi = "10.5281/zenodo.7535883"
-    version_doi = "10.5281/zenodo.23648754"
+    version_doi = "10.5281/zenodo.23652956"
     upstream_paper = "https://arxiv.org/abs/2405.08810"
     ecosystem_doi = "10.1080/10556788.2026.2702926"
     version = match(r"(?m)^version\s*=\s*\"([^\"]+)\"", project).captures[1]
@@ -25,7 +25,7 @@ include(joinpath(@__DIR__, "..", "scripts", "verify_zenodo_release.jl"))
     @test occursin("badge/DOI/$concept_doi.svg", readme)
     @test occursin("doi.org/$concept_doi", readme)
     @test occursin("doi.org/$version_doi", readme)
-    @test occursin("(`v0.7.2`)", readme)
+    @test occursin("(`v0.8.0`)", readme)
     @test occursin(upstream_paper, readme)
     @test occursin(ecosystem_doi, readme)
     @test occursin(
@@ -44,13 +44,13 @@ include(joinpath(@__DIR__, "..", "scripts", "verify_zenodo_release.jl"))
     @test occursin(r"(?m)^\s*-\s*TagBot\s*$", workflow)
     @test occursin("scripts/verify_zenodo_release.jl", workflow)
 
-    rec(; concept = "7535883", version = "v0.7.2", doi = version_doi) = Dict{String,Any}(
+    rec(; concept = "7535883", version = "v0.8.0", doi = version_doi) = Dict{String,Any}(
         "conceptrecid" => concept,
         "doi" => doi,
         "metadata" => Dict{String,Any}("version" => version),
     )
-    @test ZenodoReleaseVerification.check_record(rec(), "v0.7.2").ok
-    @test !ZenodoReleaseVerification.check_record(rec(; version = "v0.3.0"), "v0.7.2").ok
-    @test !ZenodoReleaseVerification.check_record(rec(; concept = "9999999"), "v0.7.2").ok
-    @test !ZenodoReleaseVerification.check_record(rec(; doi = concept_doi), "v0.7.2").ok
+    @test ZenodoReleaseVerification.check_record(rec(), "v0.8.0").ok
+    @test !ZenodoReleaseVerification.check_record(rec(; version = "v0.3.0"), "v0.8.0").ok
+    @test !ZenodoReleaseVerification.check_record(rec(; concept = "9999999"), "v0.8.0").ok
+    @test !ZenodoReleaseVerification.check_record(rec(; doi = concept_doi), "v0.8.0").ok
 end

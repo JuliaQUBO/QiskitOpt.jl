@@ -575,7 +575,7 @@ release. Citation metadata is available in [`CITATION.cff`](CITATION.cff).
 For exact-version reproducibility, cite the Zenodo version DOI recorded in that
 GitHub release and Zenodo record. For example, an archived Zenodo
 record under this concept is
-[10.5281/zenodo.23648754](https://doi.org/10.5281/zenodo.23648754) (`v0.7.2`).
+[10.5281/zenodo.23652956](https://doi.org/10.5281/zenodo.23652956) (`v0.8.0`).
 
 This package builds on the native Julia C-API bindings [`Qiskit.jl`](https://github.com/Qiskit/Qiskit.jl) and [`QiskitIBMRuntime.jl`](https://github.com/Qiskit/QiskitIBMRuntime.jl) for upstream
 [Qiskit](https://github.com/Qiskit/qiskit). When using Qiskit quantum circuits, transpilers, or optimization
