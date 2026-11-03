@@ -20,7 +20,8 @@ publication passes; one failure cannot starve the other PRs.
 
 - `Julia 1.10 - ubuntu-latest - pull_request`
 - `Julia 1 - ubuntu-latest - pull_request`
-- `Julia 1 - windows-latest - pull_request`
+- `Julia 1 - macos-latest - pull_request`
+- `Julia 1 - PythonCall Extension - pull_request`
 - `Dependabot policy`
 
 ## Branch protection and activation
@@ -35,7 +36,8 @@ These required contexts must remain enforced:
 
 - `Julia 1 - ubuntu-latest - pull_request`
 - `Julia 1.10 - ubuntu-latest - pull_request`
-- `Julia 1 - windows-latest - pull_request`
+- `Julia 1 - macos-latest - pull_request`
+- `Julia 1 - PythonCall Extension - pull_request`
 
 When `main` advances, update
 existing Dependabot branches with "Update branch" or `@dependabot rebase` and
