@@ -392,6 +392,42 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(automation.reconcile_publication(github), [])
         self.assertEqual(github.writes, [])
 
+    def test_policy_checks_match_workflows_and_docs(self):
+        ci = self.workflow("ci.yml")
+        ci_checks = set()
+        for job in ci["jobs"].values():
+            template = job["name"].replace("${{ github.event_name }}", "pull_request")
+            matrix = (job.get("strategy") or {}).get("matrix") or {}
+            if "include" in matrix:
+                for entry in matrix["include"]:
+                    rendered = template
+                    for key, value in entry.items():
+                        rendered = rendered.replace(f"${{{{ matrix.{key} }}}}", str(value))
+                    ci_checks.add(rendered)
+            else:
+                ci_checks.add(template)
+        validate = self.workflow("validate-dependabot-automerge.yml")
+        policy_check = validate["jobs"]["validate"]["name"]
+        self.assertEqual(automation.PROTECTED_CHECKS, ci_checks)
+        self.assertEqual(automation.REQUIRED_CHECKS, ci_checks | {policy_check})
+
+        doc = (ROOT / ".github" / "DEPENDABOT_AUTOMERGE.md").read_text()
+        _, required_section = doc.split("## Required successful checks\n", 1)
+        required_block, protected_section = required_section.split("## Branch protection and activation\n", 1)
+        protected_block, _ = protected_section.split("## Publication and live verification\n", 1)
+        doc_required = {
+            line.removeprefix("- `").removesuffix("`")
+            for line in required_block.splitlines()
+            if line.startswith("- `")
+        }
+        doc_protected = {
+            line.removeprefix("- `").removesuffix("`")
+            for line in protected_block.splitlines()
+            if line.startswith("- `")
+        }
+        self.assertEqual(doc_required, automation.REQUIRED_CHECKS)
+        self.assertEqual(doc_protected, automation.PROTECTED_CHECKS)
+
 
 if __name__ == "__main__":
     unittest.main()
